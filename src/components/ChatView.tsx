@@ -15,7 +15,6 @@ import {
   FilePptIcon,
   ReplyIcon,
   UserPlusIcon,
-  PhoneIcon,
 } from './Icons';
 import type { AttachedPage } from '../types/notebook';
 
@@ -73,7 +72,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
   currentUsername,
   allUsers = [],
   onInviteUser,
-  onStartCall,
 }) => {
   const [inputMessage, setInputMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -420,6 +418,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       key={p}
                       style={{
                         ...styles.stackAvatar,
+                        backgroundColor: pColor,
                       }}
                       title={p}
                     >

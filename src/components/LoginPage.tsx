@@ -97,25 +97,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
     }
   };
 
-  const handleSocialLogin = async (provider: 'Google' | 'Apple') => {
-    setIsLoading(true);
-    const demoUser = provider === 'Google' ? 'GoogleUser' : 'AppleUser';
-    try {
-      const profile = await registerUser(demoUser, 'social_123', 'Engineering', 'Computer Science').catch(() => {
-        return authenticateUser(demoUser, 'social_123');
-      });
-      onLoginSuccess(profile);
-    } catch {
-      onLoginSuccess({
-        username: demoUser,
-        stream: 'Engineering',
-        branch: 'Computer Science',
-        createdAt: Date.now(),
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const switchMode = (mode: 'login' | 'signup') => {
     setAuthMode(mode);
