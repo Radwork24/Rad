@@ -10,7 +10,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@google/genai": "^2.31.0",
     "@types/react-syntax-highlighter": "^15.5.13",
     "firebase": "^13.1.0",
     "katex": "^0.19.1",

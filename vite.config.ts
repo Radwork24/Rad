@@ -87,4 +87,6 @@ function terminalLoggerPlugin(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), terminalLoggerPlugin()],
+  // Expose FIREBASE_* and RAPIDROUTER_* to the client (no VITE_ prefix for Vercel Secrets)
+  envPrefix: ['FIREBASE_', 'RAPIDROUTER_'],
 })
