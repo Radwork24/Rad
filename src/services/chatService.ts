@@ -10,7 +10,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { ChatSession, ChatMessage } from '../types/chat';
-import { requestRapidRouterChat, type ChatMessagePayload } from './groqService';
+import { requestRapidRouterChat, type ChatMessagePayload } from './rapidRouterService';
 
 const DEFAULT_AI_MODEL = 'qwen/qwen3.7-flash';
 

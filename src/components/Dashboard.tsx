@@ -461,7 +461,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </div>
           )}
 
-          {/* Pasted / Uploaded Image Previews Tray (like ChatGPT, Claude, Gemini) */}
+          {/* Pasted / Uploaded Image Previews Tray */}
           {pastedImages && pastedImages.length > 0 && (
             <div style={styles.imagesPreviewTray}>
               {pastedImages.map((img) => (

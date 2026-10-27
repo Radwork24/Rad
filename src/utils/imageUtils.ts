@@ -2,7 +2,7 @@
  * Rad Image Utilities
  * Provides image compression and processing to prevent exceeding
  * Firestore (1MB limit) and browser localStorage (5MB limit)
- * while maintaining crystal-clear visual quality for Gemini 3.8 Flash multimodal reasoning.
+ * while maintaining crystal-clear visual quality for multimodal chat input.
  */
 
 export interface ProcessedImage {

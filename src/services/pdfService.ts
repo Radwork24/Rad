@@ -1,7 +1,7 @@
 /**
  * PDF Service
  * High-performance, client-side PDF page rendering and text extraction using pdfjs-dist.
- * Converts PDF pages directly to high-resolution JPEG images for Groq Qwen vision models.
+ * Converts PDF pages directly to high-resolution JPEG images for vision-capable chat models.
  */
 
 import * as pdfjsLib from 'pdfjs-dist';

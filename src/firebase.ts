@@ -25,7 +25,7 @@ for (const [key, value] of Object.entries(firebaseConfig)) {
 export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
 // Connect to the named Firestore database 'rad24'
-const databaseId = import.meta.env.VITE_FIREBASE_DATABASE_ID || "rad24";
+const databaseId = import.meta.env.FIREBASE_DATABASE_ID || 'rad24';
 export const db = getFirestore(app, databaseId);
 export const storage = getStorage(app);
 

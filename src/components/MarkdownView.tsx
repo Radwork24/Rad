@@ -6,7 +6,7 @@ import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import type { Components } from 'react-markdown';
-import { stripThinking } from '../services/groqService';
+import { stripThinking } from '../services/rapidRouterService';
 
 interface MarkdownViewProps {
   content: string;
