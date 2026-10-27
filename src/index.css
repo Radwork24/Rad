@@ -1,0 +1,272 @@
+:root {
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  --font-serif: 'Newsreader', 'Lora', Georgia, 'Times New Roman', serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* ChatGPT Pure Black OLED Dark Palette */
+  --bg-main: #000000;
+  --bg-sidebar: #000000;
+  --bg-card: #212121;
+  --bg-card-hover: #2a2a2a;
+  --bg-pill: #212121;
+  --bg-pill-hover: #2c2c2c;
+  --bg-active-tab: #1f1f1f;
+
+  --border-subtle: rgba(255, 255, 255, 0.1);
+  --border-medium: rgba(255, 255, 255, 0.14);
+  --border-focus: rgba(255, 255, 255, 0.28);
+
+  --text-primary: #ffffff;
+  --text-secondary: #b4b4b4;
+  --text-muted: #8e8e8e;
+  --text-placeholder: #737373;
+
+  /* ChatGPT Iconic Accents */
+  --accent-terracotta: #3b82f6; /* Blue send circle button */
+  --accent-terracotta-hover: #2563eb;
+  --accent-chatgpt-green: #10a37f;
+  --accent-upgrade: #3b82f6;
+  --accent-upgrade-bg: rgba(59, 130, 246, 0.16);
+
+  --sidebar-width: 260px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background-color: var(--bg-main);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+  display: flex;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: inherit;
+}
+
+input,
+textarea {
+  font-family: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+/* Scrollbar customization */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* IDE-Style Splitter Resize Handle */
+.ide-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 50;
+  transition: background-color 0.15s ease;
+}
+
+.ide-resize-handle:hover,
+.ide-resize-handle.active {
+  background-color: var(--accent-terracotta);
+}
+
+.ide-resize-handle-left {
+  right: -3px;
+}
+
+.ide-resize-handle-right {
+  left: -3px;
+}
+
+/* Delete Button hover effect */
+.rad-chat-delete-btn {
+  opacity: 0.6;
+  transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease !important;
+}
+
+.rad-chat-delete-btn:hover {
+  opacity: 1 !important;
+  color: #ef4444 !important;
+  background-color: rgba(239, 68, 68, 0.15) !important;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Markdown Tables - Pure Black OLED with Crisp White Outline */
+.rad-markdown-table-wrapper {
+  overflow-x: auto;
+  margin: 16px 0;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background-color: #000000;
+}
+
+.rad-markdown-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: #ececec;
+  background-color: #000000;
+}
+
+.rad-markdown-table thead {
+  background-color: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.rad-markdown-table th {
+  padding: 10px 14px;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 13px;
+  text-align: left;
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.rad-markdown-table th:last-child {
+  border-right: none;
+}
+
+.rad-markdown-table td {
+  padding: 10px 14px;
+  color: #dedad0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  vertical-align: top;
+}
+
+.rad-markdown-table td:last-child {
+  border-right: none;
+}
+
+.rad-markdown-table tbody tr {
+  transition: background-color 0.15s ease;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.rad-markdown-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.rad-markdown-table tbody tr:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+/* KaTeX Math Styling */
+.katex {
+  font-size: 1.05em;
+  color: #f3efe6;
+}
+
+.katex-display {
+  margin: 14px 0 !important;
+  padding: 12px 16px !important;
+  background-color: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+}
+
+.katex-display > .katex {
+  text-align: center;
+  white-space: normal;
+}
+
+.katex-error {
+  color: #f87171 !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.9em;
+}
+
+/* Voice Call Animations */
+@keyframes soundWave {
+  0% {
+    height: 4px;
+    opacity: 0.4;
+  }
+  100% {
+    height: 18px;
+    opacity: 1;
+  }
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.3;
+  }
+  100% {
+    transform: scale(1.25);
+    opacity: 0;
+  }
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+
+
