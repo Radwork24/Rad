@@ -257,6 +257,41 @@ textarea {
   }
 }
 
+@keyframes rad-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.rad-spinner {
+  display: inline-block;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: rad-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes rad-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+.rad-skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.09) 50%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  animation: rad-shimmer 1.15s ease-in-out infinite;
+}
+
 @keyframes slideDown {
   from {
     opacity: 0;

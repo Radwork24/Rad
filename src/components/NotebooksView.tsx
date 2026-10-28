@@ -23,6 +23,7 @@ import {
   uploadFileToNotebook,
   deleteFileFromNotebook,
 } from '../services/notebookService';
+import { LoadingHint, SkeletonList } from './LoadingState';
 
 interface NotebooksViewProps {
   isSidebarOpen: boolean;
@@ -54,6 +55,7 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
   onOpenDocumentViewer,
 }) => {
   const [notebooks, setNotebooks] = useState<NotebookItem[]>([]);
+  const [isLoadingNotebooks, setIsLoadingNotebooks] = useState(true);
   const [openedNotebookId, setOpenedNotebookId] = useState<string | null>(null);
   const [activeViewingFile, setActiveViewingFile] = useState<NotebookFile | null>(null);
 
@@ -79,9 +81,14 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
 
   // Subscribe in real-time to user's notebooks in Firebase Firestore
   useEffect(() => {
-    if (!username) return;
+    if (!username) {
+      setIsLoadingNotebooks(false);
+      return;
+    }
+    setIsLoadingNotebooks(true);
     const unsubscribe = subscribeToNotebooks(username, (userNotebooks) => {
       setNotebooks(userNotebooks);
+      setIsLoadingNotebooks(false);
     });
     return () => unsubscribe();
   }, [username]);
@@ -545,6 +552,15 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
 
             {/* Cards Grid: ONLY "+ Create Notebook" card + Notebook folder cards */}
             <div style={styles.cardsGrid}>
+              {isLoadingNotebooks ? (
+                <>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <LoadingHint label="Loading notebooks" />
+                  </div>
+                  <SkeletonList rows={4} variant="card" />
+                </>
+              ) : (
+              <>
               {/* Card 1: "+ Create Notebook" Card */}
               <div
                 onClick={() => setShowCreateModal(true)}
@@ -658,6 +674,8 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                   </div>
                 );
               })}
+              </>
+              )}
             </div>
           </div>
         )}

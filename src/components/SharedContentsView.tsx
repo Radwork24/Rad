@@ -9,6 +9,7 @@ import {
 } from './Icons';
 import type { ChatSession } from '../types/chat';
 import type { UserProfile } from '../services/userService';
+import { LoadingHint, SkeletonList } from './LoadingState';
 
 interface SharedContentsViewProps {
   isSidebarOpen: boolean;
@@ -21,6 +22,7 @@ interface SharedContentsViewProps {
   onSelectChat: (chatId: string) => void;
   onInviteUser: (targetUsername: string, specificChatId?: string) => void;
   pendingInviteUsernames?: string[];
+  isLoading?: boolean;
 }
 
 // User collaborator card data
@@ -44,6 +46,7 @@ export const SharedContentsView: React.FC<SharedContentsViewProps> = ({
   onSelectChat,
   onInviteUser,
   pendingInviteUsernames = [],
+  isLoading = false,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'invited' | 'available'>('all');
@@ -237,6 +240,15 @@ export const SharedContentsView: React.FC<SharedContentsViewProps> = ({
               CARDS GRID: Cards of users with whom I ever invited to chat
              ======================================================== */}
           <div style={styles.cardsGrid}>
+            {isLoading ? (
+              <>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <LoadingHint label="Loading shared contents" />
+                </div>
+                <SkeletonList rows={4} variant="card" />
+              </>
+            ) : (
+            <>
             {/* Card 1: "+ Invite User" Card */}
             <div
               onClick={() => setShowInviteModal(true)}
@@ -425,6 +437,8 @@ export const SharedContentsView: React.FC<SharedContentsViewProps> = ({
                   </div>
                 );
               })}
+            </>
+            )}
           </div>
         </div>
       </div>

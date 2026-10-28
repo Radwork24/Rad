@@ -89,6 +89,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const stickToBottomRef = useRef(true);
 
   const lastMsg = chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : null;
   const isAwaitingAi =
@@ -96,19 +97,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
     lastMsg?.role === 'user' ||
     (lastMsg?.role === 'assistant' && !lastMsg.content);
 
-  // Auto-scroll to bottom on new messages or when waiting for AI
+  // Follow new stream tokens only while the user is still at the bottom.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!stickToBottomRef.current) return;
+    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   }, [chat.messages, isAwaitingAi]);
 
   const handleScroll = () => {
     if (!scrollContainerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
     const isNearBottom = scrollHeight - scrollTop - clientHeight < 120;
+    stickToBottomRef.current = isNearBottom;
     setShowScrollBottom(!isNearBottom);
   };
 
+  const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (event.deltaY < 0) {
+      stickToBottomRef.current = false;
+      setShowScrollBottom(true);
+    }
+  };
+
   const scrollToBottom = () => {
+    stickToBottomRef.current = true;
+    setShowScrollBottom(false);
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
@@ -329,6 +341,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
       return;
     }
 
+    stickToBottomRef.current = true;
+    setShowScrollBottom(false);
+
     let text = inputMessage.trim();
     if (hasAttachments) {
       const pageRefs = attachedPages
@@ -460,6 +475,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
+        onWheel={handleWheel}
         style={styles.scrollArea}
       >
         <div style={styles.messagesContainer}>

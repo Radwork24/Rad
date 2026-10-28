@@ -11,6 +11,7 @@ import {
 
 import type { ChatSession } from '../types/chat';
 import type { UserProfile } from '../services/userService';
+import { LoadingHint, SkeletonList } from './LoadingState';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -25,6 +26,7 @@ interface SidebarProps {
   onLogout?: () => void;
   userProfile?: UserProfile | null;
   onOpenContactUs?: () => void;
+  isLoadingChats?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -40,6 +42,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLogout,
   userProfile,
   onOpenContactUs,
+  isLoadingChats = false,
 }) => {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [isChatsExpanded, setIsChatsExpanded] = useState(true);
@@ -241,7 +244,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <ChevronRightIcon size={12} />
           </span>
-          {chats.length > 0 && (
+          {!isLoadingChats && chats.length > 0 && (
             <span style={{ fontSize: '11px', color: '#706c64', marginLeft: '4px' }}>
               {chats.length}
             </span>
@@ -252,7 +255,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Chat list area */}
       {isChatsExpanded ? (
         <div style={styles.chatListScrollArea}>
-          {chats.length === 0 ? (
+          {isLoadingChats ? (
+            <>
+              <LoadingHint label="Loading chats" compact />
+              <SkeletonList rows={6} variant="chat" />
+            </>
+          ) : chats.length === 0 ? (
             <div style={styles.emptyChatsBox}>
               <span style={styles.emptyChatsText}>No recent chats</span>
             </div>

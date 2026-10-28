@@ -56,6 +56,8 @@ export default function App() {
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [incomingInvites, setIncomingInvites] = useState<ChatInvite[]>([]);
   const [sentInvites, setSentInvites] = useState<ChatInvite[]>([]);
+  const [isChatsLoading, setIsChatsLoading] = useState(true);
+  const [isUsersLoading, setIsUsersLoading] = useState(true);
 
   // Floating Document Viewer & Page Picture Attachment State
   const [activeViewingFile, setActiveViewingFile] = useState<NotebookFile | null>(null);
@@ -72,8 +74,10 @@ export default function App() {
 
   // Real-time listener for all signed users from Firebase Firestore
   useEffect(() => {
+    setIsUsersLoading(true);
     const unsubscribe = subscribeToAllUsers((users) => {
       setAllUsers(users);
+      setIsUsersLoading(false);
     });
     return () => unsubscribe();
   }, []);
@@ -120,11 +124,14 @@ export default function App() {
   useEffect(() => {
     if (!currentUser?.username) {
       setChats([]);
+      setIsChatsLoading(false);
       return;
     }
 
+    setIsChatsLoading(true);
     const unsubscribe = subscribeToChats(currentUser.username, (updatedChats) => {
       setChats(updatedChats);
+      setIsChatsLoading(false);
       // Once the real chat arrives in Firestore, clear the pending optimistic chat
       setPendingChat((prev) => {
         if (prev && updatedChats.some((c) => c.id === prev.id)) {
@@ -453,6 +460,7 @@ export default function App() {
         onLogout={handleLogout}
         userProfile={currentUser}
         onOpenContactUs={() => setShowContactUs(true)}
+        isLoadingChats={isChatsLoading}
       />
 
       {activeChatId && activeChat ? (
@@ -486,6 +494,7 @@ export default function App() {
           onSelectChat={handleSelectChat}
           onInviteUser={handleInviteUser}
           pendingInviteUsernames={sentInvites.map((invite) => invite.toUsername)}
+          isLoading={isChatsLoading || isUsersLoading}
         />
       ) : activeView === 'notebooks' ? (
         <NotebooksView
@@ -523,6 +532,7 @@ export default function App() {
           .map((invite) => invite.toUsername)}
         onAcceptInvite={handleAcceptInvite}
         onDeclineInvite={handleDeclineInvite}
+        isLoadingUsers={isUsersLoading}
       />
 
       {/* Floating, Movable, Resizable Document Viewer Window */}

@@ -10,6 +10,7 @@ import {
 import type { UserProfile } from '../services/userService';
 import type { ChatSession } from '../types/chat';
 import type { ChatInvite } from '../services/inviteService';
+import { LoadingHint, SkeletonList } from './LoadingState';
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -23,6 +24,7 @@ interface RightSidebarProps {
   pendingInviteUsernames?: string[];
   onAcceptInvite?: (invite: ChatInvite) => void;
   onDeclineInvite?: (invite: ChatInvite) => void;
+  isLoadingUsers?: boolean;
 }
 
 
@@ -38,6 +40,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   pendingInviteUsernames = [],
   onAcceptInvite,
   onDeclineInvite,
+  isLoadingUsers = false,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isBellOpen, setIsBellOpen] = useState(false);
@@ -277,7 +280,12 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
 
       {/* Scrollable User Cards List */}
       <div style={styles.userListScroll}>
-        {filteredUsers.length === 0 ? (
+        {isLoadingUsers ? (
+          <>
+            <LoadingHint label="Loading users" compact />
+            <SkeletonList rows={6} variant="user" />
+          </>
+        ) : filteredUsers.length === 0 ? (
           <div style={styles.emptyState}>
             <UsersIcon size={26} />
             <span style={styles.emptyText}>
