@@ -22,10 +22,16 @@ import {
   subscribeToChats,
   createNewChat,
   sendChatMessage,
-  inviteUserToChat,
-  createSharedChatWithUser,
   deleteChatSession,
 } from './services/chatService';
+import {
+  sendChatInvite,
+  subscribeToIncomingInvites,
+  subscribeToSentInvites,
+  acceptChatInvite,
+  declineChatInvite,
+  type ChatInvite,
+} from './services/inviteService';
 import { setAuthCookie, getAuthCookie, clearAuthCookie } from './utils/cookieUtils';
 
 export default function App() {
@@ -48,6 +54,8 @@ export default function App() {
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [pendingChat, setPendingChat] = useState<ChatSession | null>(null);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
+  const [incomingInvites, setIncomingInvites] = useState<ChatInvite[]>([]);
+  const [sentInvites, setSentInvites] = useState<ChatInvite[]>([]);
 
   // Floating Document Viewer & Page Picture Attachment State
   const [activeViewingFile, setActiveViewingFile] = useState<NotebookFile | null>(null);
@@ -77,6 +85,20 @@ export default function App() {
       setActiveCall(incomingCall);
     });
     return () => unsubscribe();
+  }, [currentUser?.username]);
+
+  useEffect(() => {
+    if (!currentUser?.username) {
+      setIncomingInvites([]);
+      setSentInvites([]);
+      return;
+    }
+    const unsubIncoming = subscribeToIncomingInvites(currentUser.username, setIncomingInvites);
+    const unsubSent = subscribeToSentInvites(currentUser.username, setSentInvites);
+    return () => {
+      unsubIncoming();
+      unsubSent();
+    };
   }, [currentUser?.username]);
 
   const handleStartCall = async (targetUsername: string) => {
@@ -350,49 +372,40 @@ export default function App() {
   const handleInviteUser = async (targetUsername: string, specificChatId?: string) => {
     if (!currentUser?.username) return;
     const cid = specificChatId || activeChatId;
+    const targetChat = cid
+      ? chats.find((c) => c.id === cid) || (pendingChat?.id === cid ? pendingChat : undefined)
+      : chats[0];
 
-    if (cid) {
-      try {
-        const updated = await inviteUserToChat(currentUser.username, targetUsername, cid);
-        if (updated) {
-          setChats((prev) =>
-            prev.map((c) =>
-              c.id === cid
-                ? { ...c, participants: updated.participants, messages: updated.messages }
-                : c
-            )
-          );
-        }
-        setActiveChatId(cid);
-      } catch (err) {
-        console.error('Failed to invite user to chat:', err);
+    try {
+      const invite = await sendChatInvite(
+        currentUser.username,
+        targetUsername,
+        cid || targetChat?.id,
+        targetChat?.title
+      );
+      if (invite.chatId) {
+        setActiveChatId(invite.chatId);
       }
-    } else {
-      if (chats.length > 0) {
-        const latestChat = chats[0];
-        try {
-          const updated = await inviteUserToChat(currentUser.username, targetUsername, latestChat.id);
-          if (updated) {
-            setChats((prev) =>
-              prev.map((c) =>
-                c.id === latestChat.id
-                  ? { ...c, participants: updated.participants, messages: updated.messages }
-                  : c
-              )
-            );
-          }
-          setActiveChatId(latestChat.id);
-        } catch (err) {
-          console.error('Failed to invite user to latest chat:', err);
-        }
-      } else {
-        try {
-          const newChatId = await createSharedChatWithUser(currentUser.username, targetUsername);
-          setActiveChatId(newChatId);
-        } catch (err) {
-          console.error('Failed to create shared chat:', err);
-        }
-      }
+    } catch (err) {
+      console.error('Failed to send chat invite:', err);
+    }
+  };
+
+  const handleAcceptInvite = async (invite: ChatInvite) => {
+    try {
+      await acceptChatInvite(invite);
+      setActiveChatId(invite.chatId);
+      setActiveView('dashboard');
+    } catch (err) {
+      console.error('Failed to accept invite:', err);
+    }
+  };
+
+  const handleDeclineInvite = async (invite: ChatInvite) => {
+    try {
+      await declineChatInvite(invite);
+    } catch (err) {
+      console.error('Failed to decline invite:', err);
     }
   };
 
@@ -457,6 +470,9 @@ export default function App() {
           allUsers={allUsers}
           onInviteUser={handleInviteUser}
           onStartCall={handleStartCall}
+          pendingInviteUsernames={sentInvites
+            .filter((invite) => !activeChatId || invite.chatId === activeChatId)
+            .map((invite) => invite.toUsername)}
         />
       ) : activeView === 'shared' ? (
         <SharedContentsView
@@ -469,6 +485,7 @@ export default function App() {
           currentUsername={currentUser.username}
           onSelectChat={handleSelectChat}
           onInviteUser={handleInviteUser}
+          pendingInviteUsernames={sentInvites.map((invite) => invite.toUsername)}
         />
       ) : activeView === 'notebooks' ? (
         <NotebooksView
@@ -500,6 +517,12 @@ export default function App() {
         activeChat={activeChat}
         onInviteUser={handleInviteUser}
         onStartCall={handleStartCall}
+        incomingInvites={incomingInvites}
+        pendingInviteUsernames={sentInvites
+          .filter((invite) => !activeChatId || invite.chatId === activeChatId)
+          .map((invite) => invite.toUsername)}
+        onAcceptInvite={handleAcceptInvite}
+        onDeclineInvite={handleDeclineInvite}
       />
 
       {/* Floating, Movable, Resizable Document Viewer Window */}
@@ -517,6 +540,7 @@ export default function App() {
       <FloatingCallWidget
         call={activeCall}
         onCallEnded={() => setActiveCall(null)}
+        onCallStateChange={setActiveCall}
       />
     </div>
   );

@@ -8,7 +8,6 @@ import {
   onSnapshot,
   query,
   where,
-  limit,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 
@@ -201,8 +200,10 @@ export async function startVoiceCall(
 
   const callData = {
     callId,
-    caller: callerUsername,
-    receiver: receiverUsername,
+    caller: safeCaller,
+    receiver: safeReceiver,
+    callerDisplay: callerUsername,
+    receiverDisplay: receiverUsername,
     status: 'ringing',
     offer: {
       type: offer.type,
@@ -354,8 +355,8 @@ export async function answerVoiceCall(
 
   onStateChange({
     callId,
-    caller: callData.caller,
-    receiver: callData.receiver,
+    caller: callData.callerDisplay || callData.caller,
+    receiver: callData.receiverDisplay || callData.receiver,
     isIncoming: true,
     status: 'connected',
     startTime: Date.now(),
@@ -479,30 +480,47 @@ export function subscribeToIncomingCalls(
 
   const safeUsername = username.toLowerCase().trim();
   const callsRef = collection(db, 'calls');
-  // Query calls where receiver matches and status is 'ringing'
-  const q = query(
-    callsRef,
-    where('receiver', '==', safeUsername),
-    where('status', '==', 'ringing'),
-    limit(1)
-  );
+  // Single-field query so Firestore does not require a composite index.
+  // Status and freshness are filtered on the client.
+  const q = query(callsRef, where('receiver', '==', safeUsername));
 
-  return onSnapshot(q, (snapshot) => {
-    snapshot.docChanges().forEach((change) => {
-      if (change.type === 'added') {
-        const data = change.doc.data();
-        // Ignore calls older than 60 seconds
-        if (Date.now() - (data.createdAt || 0) < 60000) {
-          playIncomingChime();
-          onIncomingCall({
-            callId: data.callId || change.doc.id,
-            caller: data.caller,
-            receiver: data.receiver,
-            isIncoming: true,
-            status: 'ringing',
-          });
+  const seenRingingIds = new Set<string>();
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'removed') {
+          seenRingingIds.delete(change.doc.id);
+          return;
         }
-      }
-    });
-  });
+
+        const data = change.doc.data();
+        const receiverKey = String(data.receiver || '').toLowerCase().trim();
+        if (receiverKey !== safeUsername) return;
+        if (data.status !== 'ringing') {
+          seenRingingIds.delete(change.doc.id);
+          return;
+        }
+
+        const ageMs = Date.now() - (data.createdAt || 0);
+        if (ageMs > 120000) return;
+
+        if (seenRingingIds.has(change.doc.id)) return;
+        seenRingingIds.add(change.doc.id);
+
+        playIncomingChime();
+        onIncomingCall({
+          callId: data.callId || change.doc.id,
+          caller: data.callerDisplay || data.caller,
+          receiver: data.receiverDisplay || data.receiver,
+          isIncoming: true,
+          status: 'ringing',
+        });
+      });
+    },
+    (error) => {
+      console.error('Incoming call subscription failed:', error.message);
+    }
+  );
 }

@@ -20,6 +20,7 @@ interface SharedContentsViewProps {
   currentUsername: string;
   onSelectChat: (chatId: string) => void;
   onInviteUser: (targetUsername: string, specificChatId?: string) => void;
+  pendingInviteUsernames?: string[];
 }
 
 // User collaborator card data
@@ -42,6 +43,7 @@ export const SharedContentsView: React.FC<SharedContentsViewProps> = ({
   currentUsername,
   onSelectChat,
   onInviteUser,
+  pendingInviteUsernames = [],
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'invited' | 'available'>('all');
@@ -493,6 +495,11 @@ export const SharedContentsView: React.FC<SharedContentsViewProps> = ({
                             p.toLowerCase().trim() ===
                             selectedUserToShare.toLowerCase().trim()
                         );
+                        const isPending = pendingInviteUsernames.some(
+                          (name) =>
+                            name.toLowerCase().trim() ===
+                            selectedUserToShare.toLowerCase().trim()
+                        );
                         return (
                           <div key={c.id} style={styles.chatPickerRow}>
                             <div style={styles.chatPickerInfo}>
@@ -511,6 +518,8 @@ export const SharedContentsView: React.FC<SharedContentsViewProps> = ({
 
                             {inThis ? (
                               <span style={styles.alreadySharedBadge}>In Chat ✓</span>
+                            ) : isPending ? (
+                              <span style={styles.alreadySharedBadge}>Pending</span>
                             ) : (
                               <button
                                 onClick={() => {

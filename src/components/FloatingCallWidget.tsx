@@ -16,11 +16,13 @@ import {
 interface FloatingCallWidgetProps {
   call: ActiveCallState | null;
   onCallEnded: () => void;
+  onCallStateChange?: (call: ActiveCallState | null) => void;
 }
 
 export const FloatingCallWidget: React.FC<FloatingCallWidgetProps> = ({
   call,
   onCallEnded,
+  onCallStateChange,
 }) => {
   const [isMuted, setIsMuted] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
@@ -74,7 +76,13 @@ export const FloatingCallWidget: React.FC<FloatingCallWidgetProps> = ({
 
   const handleAnswerCall = async () => {
     try {
-      await answerVoiceCall(call.callId, () => {});
+      await answerVoiceCall(call.callId, (nextState) => {
+        if (!nextState || nextState.status === 'ended' || nextState.status === 'declined') {
+          onCallEnded();
+          return;
+        }
+        onCallStateChange?.(nextState);
+      });
     } catch (err: any) {
       alert(err?.message || 'Could not answer call. Please check microphone permissions.');
       onCallEnded();

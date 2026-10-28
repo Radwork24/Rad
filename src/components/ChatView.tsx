@@ -32,6 +32,7 @@ interface ChatViewProps {
   allUsers?: UserProfile[];
   onInviteUser?: (targetUsername: string) => void;
   onStartCall?: (targetUsername: string) => void;
+  pendingInviteUsernames?: string[];
 }
 
 export interface AttachedImagePreview {
@@ -72,6 +73,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   currentUsername,
   allUsers = [],
   onInviteUser,
+  pendingInviteUsernames = [],
 }) => {
   const [inputMessage, setInputMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
@@ -828,7 +830,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
             <div style={styles.modalBody}>
               <p style={styles.modalDesc}>
-                The invited user will get access to this full chat history with Rad AI in their Shared Contents, and can ask questions alongside you in real time.
+                They'll get a notification in their bell icon. The chat is shared only after they accept.
               </p>
 
               <div style={styles.modalUserList}>
@@ -841,6 +843,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   .map((u) => {
                     const inChat = (chat.participants || []).some(
                       (p) => p.toLowerCase().trim() === u.username.toLowerCase().trim()
+                    );
+                    const isPending = pendingInviteUsernames.some(
+                      (name) => name.toLowerCase().trim() === u.username.toLowerCase().trim()
                     );
                     const color = getUserColor(u.username);
                     return (
@@ -864,6 +869,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                         {inChat ? (
                           <div style={styles.alreadyInChatPill}>In Chat ✓</div>
+                        ) : isPending ? (
+                          <div style={styles.alreadyInChatPill}>Pending</div>
                         ) : (
                           <button
                             onClick={() => {

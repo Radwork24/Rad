@@ -1,13 +1,15 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   UsersIcon,
   SidebarToggleIcon,
   SearchIcon,
   PlusIcon,
   PhoneIcon,
+  BellIcon,
 } from './Icons';
 import type { UserProfile } from '../services/userService';
 import type { ChatSession } from '../types/chat';
+import type { ChatInvite } from '../services/inviteService';
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -17,6 +19,10 @@ interface RightSidebarProps {
   activeChat?: ChatSession | null;
   onInviteUser: (username: string) => void;
   onStartCall?: (username: string) => void;
+  incomingInvites?: ChatInvite[];
+  pendingInviteUsernames?: string[];
+  onAcceptInvite?: (invite: ChatInvite) => void;
+  onDeclineInvite?: (invite: ChatInvite) => void;
 }
 
 
@@ -28,8 +34,14 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   activeChat,
   onInviteUser,
   onStartCall,
+  incomingInvites = [],
+  pendingInviteUsernames = [],
+  onAcceptInvite,
+  onDeclineInvite,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [isBellOpen, setIsBellOpen] = useState(false);
+  const bellWrapRef = useRef<HTMLDivElement | null>(null);
 
   // IDE-style dynamic resizing
   const [width, setWidth] = useState<number>(() => {
@@ -83,6 +95,17 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
     } catch {}
   };
 
+  useEffect(() => {
+    if (!isBellOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (bellWrapRef.current && !bellWrapRef.current.contains(event.target as Node)) {
+        setIsBellOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', onPointerDown);
+    return () => window.removeEventListener('mousedown', onPointerDown);
+  }, [isBellOpen]);
+
   if (!isOpen) return null;
 
   // Filter out the currently logged-in user (only show other users)
@@ -133,14 +156,93 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
           <span style={styles.titleText}>Users</span>
         </div>
 
-        <button
-          onClick={onToggle}
-          style={styles.toggleBtn}
-          title="Close sidebar"
-          aria-label="Close sidebar"
-        >
-          <SidebarToggleIcon size={18} />
-        </button>
+        <div style={styles.headerActions}>
+          <div ref={bellWrapRef} style={styles.bellWrap}>
+            <button
+              onClick={() => setIsBellOpen((prev) => !prev)}
+              style={{
+                ...styles.bellBtn,
+                backgroundColor: isBellOpen ? 'rgba(255,255,255,0.08)' : 'transparent',
+                color: isBellOpen ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.4)',
+              }}
+              title="Invite notifications"
+              aria-label="Invite notifications"
+            >
+              <BellIcon size={16} />
+              {incomingInvites.length > 0 && (
+                <span style={styles.bellBadge}>
+                  {incomingInvites.length > 9 ? '9+' : incomingInvites.length}
+                </span>
+              )}
+            </button>
+
+            {isBellOpen && (
+              <div style={styles.bellPopover} role="dialog" aria-label="Pending invites">
+                <div style={styles.bellPopoverHeader}>
+                  <span style={styles.bellPopoverTitle}>Invites</span>
+                  <span style={styles.bellPopoverCount}>
+                    {incomingInvites.length} pending
+                  </span>
+                </div>
+
+                {incomingInvites.length === 0 ? (
+                  <div style={styles.bellEmpty}>
+                    <BellIcon size={22} />
+                    <span>No pending invites</span>
+                  </div>
+                ) : (
+                  <div style={styles.bellList}>
+                    {incomingInvites.map((invite) => {
+                      const initial = invite.fromUsername.charAt(0).toUpperCase();
+                      return (
+                        <div key={invite.id} style={styles.bellInviteCard}>
+                          <div style={styles.bellInviteTop}>
+                            <div style={styles.bellAvatar}>{initial}</div>
+                            <div style={styles.bellInviteCopy}>
+                              <span style={styles.bellInviteFrom}>{invite.fromUsername}</span>
+                              <span style={styles.bellInviteMeta}>
+                                invited you to “{invite.chatTitle}”
+                              </span>
+                            </div>
+                          </div>
+                          <div style={styles.bellInviteActions}>
+                            <button
+                              onClick={() => {
+                                onDeclineInvite?.(invite);
+                                setIsBellOpen(false);
+                              }}
+                              style={styles.bellDeclineBtn}
+                            >
+                              Decline
+                            </button>
+                            <button
+                              onClick={() => {
+                                onAcceptInvite?.(invite);
+                                setIsBellOpen(false);
+                              }}
+                              style={styles.bellAcceptBtn}
+                            >
+                              Accept
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={onToggle}
+            style={styles.toggleBtn}
+            title="Close sidebar"
+            aria-label="Close sidebar"
+          >
+            <SidebarToggleIcon size={18} />
+          </button>
+        </div>
       </div>
 
       {/* Search Input */}
@@ -189,6 +291,9 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
               activeChat?.participants?.some(
                 (p) => p.toLowerCase().trim() === u.username.toLowerCase().trim()
               ) || false;
+            const isPending = pendingInviteUsernames.some(
+              (name) => name.toLowerCase().trim() === u.username.toLowerCase().trim()
+            );
 
             return (
               <div key={u.username} style={styles.userCard}>
@@ -243,6 +348,10 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                     <div style={styles.inChatBadge} title={`${u.username} is already in this chat`}>
                       <span style={styles.inChatText}>In chat</span>
                       <span style={styles.inChatCheck}>✓</span>
+                    </div>
+                  ) : isPending ? (
+                    <div style={styles.pendingBadge} title={`Waiting for ${u.username} to accept`}>
+                      <span style={styles.pendingText}>Pending</span>
                     </div>
                   ) : (
                     <button
@@ -307,6 +416,156 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'rgba(255,255,255,0.88)',
     letterSpacing: '-0.2px',
   },
+  headerActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+  },
+  bellWrap: {
+    position: 'relative',
+  },
+  bellBtn: {
+    position: 'relative',
+    color: 'rgba(255,255,255,0.4)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '28px',
+    height: '28px',
+    padding: '4px',
+    borderRadius: '6px',
+    transition: 'color 0.15s, background-color 0.15s',
+    cursor: 'pointer',
+  },
+  bellBadge: {
+    position: 'absolute',
+    top: '2px',
+    right: '2px',
+    minWidth: '14px',
+    height: '14px',
+    padding: '0 3px',
+    borderRadius: '9999px',
+    backgroundColor: '#3b82f6',
+    color: '#ffffff',
+    fontSize: '9px',
+    fontWeight: 700,
+    lineHeight: '14px',
+    textAlign: 'center',
+  },
+  bellPopover: {
+    position: 'absolute',
+    top: '34px',
+    right: 0,
+    width: '248px',
+    maxHeight: '360px',
+    backgroundColor: '#111111',
+    border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: '12px',
+    boxShadow: '0 16px 40px rgba(0,0,0,0.55)',
+    zIndex: 40,
+    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  bellPopoverHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '11px 12px 9px',
+    borderBottom: '1px solid rgba(255,255,255,0.08)',
+  },
+  bellPopoverTitle: {
+    fontSize: '13px',
+    fontWeight: 600,
+    color: 'rgba(255,255,255,0.9)',
+  },
+  bellPopoverCount: {
+    fontSize: '11px',
+    color: 'rgba(255,255,255,0.38)',
+  },
+  bellEmpty: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '8px',
+    padding: '28px 16px',
+    color: 'rgba(255,255,255,0.32)',
+    fontSize: '12px',
+  },
+  bellList: {
+    overflowY: 'auto',
+    padding: '8px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+  },
+  bellInviteCard: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    border: '1px solid rgba(255,255,255,0.07)',
+    borderRadius: '10px',
+    padding: '10px',
+  },
+  bellInviteTop: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '8px',
+  },
+  bellAvatar: {
+    width: '28px',
+    height: '28px',
+    borderRadius: '50%',
+    backgroundColor: 'rgba(59,130,246,0.18)',
+    color: '#93c5fd',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '12px',
+    fontWeight: 600,
+    flexShrink: 0,
+  },
+  bellInviteCopy: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+    minWidth: 0,
+  },
+  bellInviteFrom: {
+    fontSize: '12.5px',
+    fontWeight: 600,
+    color: 'rgba(255,255,255,0.88)',
+  },
+  bellInviteMeta: {
+    fontSize: '11px',
+    color: 'rgba(255,255,255,0.42)',
+    lineHeight: 1.35,
+  },
+  bellInviteActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '6px',
+    marginTop: '10px',
+  },
+  bellDeclineBtn: {
+    backgroundColor: 'transparent',
+    border: '1px solid rgba(255,255,255,0.12)',
+    borderRadius: '9999px',
+    padding: '4px 10px',
+    fontSize: '11px',
+    fontWeight: 500,
+    color: 'rgba(255,255,255,0.55)',
+    cursor: 'pointer',
+  },
+  bellAcceptBtn: {
+    backgroundColor: 'rgba(59,130,246,0.16)',
+    border: '1px solid rgba(59,130,246,0.38)',
+    borderRadius: '9999px',
+    padding: '4px 10px',
+    fontSize: '11px',
+    fontWeight: 600,
+    color: '#93c5fd',
+    cursor: 'pointer',
+  },
   toggleBtn: {
     color: 'rgba(255,255,255,0.4)',
     display: 'flex',
@@ -316,6 +575,20 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '6px',
     transition: 'color 0.15s, background-color 0.15s',
     cursor: 'pointer',
+  },
+  pendingBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: '9999px',
+    padding: '3px 8px',
+    flexShrink: 0,
+  },
+  pendingText: {
+    fontSize: '11px',
+    fontWeight: 500,
+    color: 'rgba(255,255,255,0.45)',
   },
   searchSection: {
     padding: '12px 12px 6px',

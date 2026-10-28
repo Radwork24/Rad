@@ -279,7 +279,7 @@ export async function inviteUserToChat(
   const inviteSystemMsg: ChatMessage = {
     id: 'msg_invite_' + now,
     role: 'assistant',
-    content: `🤝 **${inviterUsername}** invited **${inviteeUsername}** to this chat. Both collaborators can now see this entire conversation and ask questions together with Rad AI!`,
+    content: `🤝 **${inviteeUsername}** accepted **${inviterUsername}**'s invite. Both collaborators can now see this conversation and ask questions together with Rad AI!`,
     createdAt: now,
     sender: 'system',
   };
@@ -315,7 +315,8 @@ export async function inviteUserToChat(
 }
 
 /**
- * Starts a new collaborative chat session with an invited user.
+ * Starts a new chat on the inviter's side only.
+ * The invitee receives the session after they accept the invite.
  */
 export async function createSharedChatWithUser(
   inviterUsername: string,
@@ -323,7 +324,6 @@ export async function createSharedChatWithUser(
   modelName: string = DEFAULT_AI_MODEL
 ): Promise<string> {
   const inviterKey = inviterUsername.toLowerCase().trim();
-  const inviteeKey = inviteeUsername.toLowerCase().trim();
   const chatId = 'chat_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
   const now = Date.now();
   const title = `Chat with ${inviteeUsername}`;
@@ -331,8 +331,9 @@ export async function createSharedChatWithUser(
   const welcomeMsg: ChatMessage = {
     id: 'msg_' + now,
     role: 'assistant',
-    content: `👋 **${inviterUsername}** invited **${inviteeUsername}** to this conversation. How can Rad help both of you today?`,
+    content: `👋 Invite sent to **${inviteeUsername}**. This chat will be shared once they accept from their notifications.`,
     createdAt: now,
+    sender: 'system',
   };
 
   const newSession: ChatSession = {
@@ -343,20 +344,14 @@ export async function createSharedChatWithUser(
     model: modelName,
     messages: [welcomeMsg],
     creator: inviterUsername,
-    participants: [inviterKey, inviteeKey],
+    participants: [inviterKey],
   };
 
-  // Save locally
   const inviterChats = getLocalChatsForUser(inviterUsername);
   saveLocalChatsForUser(inviterUsername, [newSession, ...inviterChats]);
 
-  const inviteeChats = getLocalChatsForUser(inviteeUsername);
-  saveLocalChatsForUser(inviteeUsername, [newSession, ...inviteeChats]);
-
-  // Persist to Firestore for both
   try {
     await setDoc(doc(db, 'users', inviterKey, 'chats', chatId), newSession);
-    await setDoc(doc(db, 'users', inviteeKey, 'chats', chatId), newSession);
   } catch (err) {
     console.warn('Firestore shared chat creation warning:', err);
   }
