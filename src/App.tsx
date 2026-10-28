@@ -23,6 +23,7 @@ import {
   createNewChat,
   sendChatMessage,
   deleteChatSession,
+  mergeChatLists,
 } from './services/chatService';
 import {
   sendChatInvite,
@@ -130,9 +131,8 @@ export default function App() {
 
     setIsChatsLoading(true);
     const unsubscribe = subscribeToChats(currentUser.username, (updatedChats) => {
-      setChats(updatedChats);
+      setChats((prev) => mergeChatLists(prev, updatedChats));
       setIsChatsLoading(false);
-      // Once the real chat arrives in Firestore, clear the pending optimistic chat
       setPendingChat((prev) => {
         if (prev && updatedChats.some((c) => c.id === prev.id)) {
           return null;

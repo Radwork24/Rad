@@ -6,7 +6,8 @@ import {
   deleteDoc,
   onSnapshot,
   query,
-  orderBy,
+  where,
+  runTransaction,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { ChatSession, ChatMessage } from '../types/chat';
@@ -14,12 +15,10 @@ import { requestRapidRouterChat, type ChatMessagePayload } from './rapidRouterSe
 
 const DEFAULT_AI_MODEL = 'qwen/qwen3.7-flash';
 
-// Scoped local storage key for each user
 function getStorageKey(userId: string): string {
   return `rad_user_chats_${userId.toLowerCase().trim()}`;
 }
 
-// Local storage fallback helpers per user
 function getLocalChatsForUser(userId: string): ChatSession[] {
   try {
     const raw = localStorage.getItem(getStorageKey(userId));
@@ -42,6 +41,17 @@ function sanitizeChat(chat: ChatSession): ChatSession {
   return JSON.parse(JSON.stringify(chat)) as ChatSession;
 }
 
+function uniqueParticipants(...lists: Array<string[] | undefined>): string[] {
+  return Array.from(
+    new Set(
+      lists
+        .flat()
+        .filter(Boolean)
+        .map((p) => p!.toLowerCase().trim())
+    )
+  );
+}
+
 function mergeMessages(a: ChatMessage[] = [], b: ChatMessage[] = []): ChatMessage[] {
   const byId = new Map<string, ChatMessage>();
   [...a, ...b].forEach((msg) => {
@@ -57,65 +67,128 @@ function mergeMessages(a: ChatMessage[] = [], b: ChatMessage[] = []): ChatMessag
 function preferRicherChat(a: ChatSession | null | undefined, b: ChatSession | null | undefined): ChatSession | null {
   if (!a) return b || null;
   if (!b) return a;
-  const base = (a.messages?.length || 0) >= (b.messages?.length || 0) ? a : b;
+  const base = (a.updatedAt || 0) >= (b.updatedAt || 0) ? a : b;
   return {
     ...base,
     messages: mergeMessages(a.messages, b.messages),
-    participants: Array.from(
-      new Set(
-        [...(a.participants || []), ...(b.participants || [])].map((p) => p.toLowerCase().trim())
-      )
-    ),
+    participants: uniqueParticipants(a.participants, b.participants),
     updatedAt: Math.max(a.updatedAt || 0, b.updatedAt || 0),
+    title: (a.messages?.length || 0) >= (b.messages?.length || 0) ? a.title : b.title,
   };
 }
 
-async function fetchChatFromFirestore(userKey: string, chatId: string): Promise<ChatSession | null> {
+export function mergeChatLists(local: ChatSession[], remote: ChatSession[]): ChatSession[] {
+  const ids = new Set([...local.map((c) => c.id), ...remote.map((c) => c.id)]);
+  const result: ChatSession[] = [];
+  ids.forEach((id) => {
+    const merged = preferRicherChat(
+      local.find((c) => c.id === id),
+      remote.find((c) => c.id === id)
+    );
+    if (merged) result.push(merged);
+  });
+  return result.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+function sharedChatRef(chatId: string) {
+  return doc(db, 'chats', chatId);
+}
+
+function legacyChatRef(userKey: string, chatId: string) {
+  return doc(db, 'users', userKey.toLowerCase().trim(), 'chats', chatId);
+}
+
+function toSession(id: string, data: Record<string, unknown>, fallbackUser?: string): ChatSession {
+  return {
+    id,
+    title: (data.title as string) || 'Untitled',
+    createdAt: (data.createdAt as number) || Date.now(),
+    updatedAt: (data.updatedAt as number) || Date.now(),
+    model: (data.model as string) || DEFAULT_AI_MODEL,
+    messages: (data.messages as ChatMessage[]) || [],
+    creator: (data.creator as string) || fallbackUser,
+    participants: uniqueParticipants(data.participants as string[] | undefined, fallbackUser ? [fallbackUser] : []),
+  };
+}
+
+async function fetchSharedChat(chatId: string): Promise<ChatSession | null> {
   try {
-    const snap = await getDoc(doc(db, 'users', userKey.toLowerCase().trim(), 'chats', chatId));
+    const snap = await getDoc(sharedChatRef(chatId));
     if (snap.exists()) {
-      return { ...(snap.data() as ChatSession), id: snap.id };
+      return toSession(snap.id, snap.data() as Record<string, unknown>);
     }
   } catch (e) {
-    console.warn(`Could not fetch chat ${chatId} for ${userKey}:`, e);
+    console.warn(`Could not fetch shared chat ${chatId}:`, e);
   }
   return null;
 }
 
-async function loadLatestChat(userId: string, chatId: string): Promise<ChatSession | null> {
-  const userKey = userId.toLowerCase().trim();
-  const local = getLocalChatsForUser(userId).find((c) => c.id === chatId) || null;
-  const remote = await fetchChatFromFirestore(userKey, chatId);
-  return preferRicherChat(local, remote);
+async function fetchLegacyChat(userKey: string, chatId: string): Promise<ChatSession | null> {
+  try {
+    const snap = await getDoc(legacyChatRef(userKey, chatId));
+    if (snap.exists()) {
+      return toSession(snap.id, snap.data() as Record<string, unknown>, userKey);
+    }
+  } catch (e) {
+    console.warn(`Could not fetch legacy chat ${chatId} for ${userKey}:`, e);
+  }
+  return null;
 }
 
-async function persistChatForParticipants(chat: ChatSession): Promise<void> {
-  const participants = Array.from(
-    new Set((chat.participants || []).map((p) => p.toLowerCase().trim()).filter(Boolean))
-  );
-  const payload = sanitizeChat({
+async function loadCanonicalChat(chatId: string, userId?: string): Promise<ChatSession | null> {
+  const shared = await fetchSharedChat(chatId);
+  const local = userId ? getLocalChatsForUser(userId).find((c) => c.id === chatId) || null : null;
+  const legacy = userId ? await fetchLegacyChat(userId, chatId) : null;
+  return preferRicherChat(preferRicherChat(shared, legacy), local);
+}
+
+async function persistSharedChat(chat: ChatSession): Promise<ChatSession> {
+  const incoming = sanitizeChat({
     ...chat,
-    participants,
+    participants: uniqueParticipants(chat.participants),
   });
 
-  for (const p of participants) {
-    try {
-      const existing = await fetchChatFromFirestore(p, payload.id);
-      const merged = preferRicherChat(existing, payload) || payload;
-      const chatDocRef = doc(db, 'users', p, 'chats', payload.id);
-      await setDoc(chatDocRef, sanitizeChat(merged));
-      saveLocalChatsForUser(p, [
-        merged,
-        ...getLocalChatsForUser(p).filter((c) => c.id !== payload.id),
-      ]);
-    } catch (err: any) {
-      console.warn(`⚠️ [Rad Firestore] Persist notice for ${p}:`, err?.message || err);
+  const saved = await runTransaction(db, async (tx) => {
+    const ref = sharedChatRef(incoming.id);
+    const snap = await tx.get(ref);
+    const existing = snap.exists()
+      ? toSession(snap.id, snap.data() as Record<string, unknown>)
+      : null;
+    const merged = preferRicherChat(existing, incoming) || incoming;
+    const payload = sanitizeChat({
+      ...merged,
+      participants: uniqueParticipants(existing?.participants, incoming.participants),
+      updatedAt: Math.max(merged.updatedAt || 0, Date.now()),
+    });
+    tx.set(ref, payload);
+    return payload;
+  });
+
+  return saved;
+}
+
+async function migrateLegacyChatIfNeeded(userKey: string, chat: ChatSession): Promise<void> {
+  try {
+    const shared = await fetchSharedChat(chat.id);
+    const merged = preferRicherChat(shared, {
+      ...chat,
+      participants: uniqueParticipants(chat.participants, [userKey], shared?.participants),
+    });
+    if (!merged) return;
+    if (
+      !shared ||
+      (merged.messages?.length || 0) > (shared.messages?.length || 0) ||
+      !(shared.participants || []).includes(userKey)
+    ) {
+      await persistSharedChat(merged);
     }
+  } catch (err) {
+    console.warn('Legacy chat migrate notice:', err);
   }
 }
 
 /**
- * Listens in real-time to a specific user's chats from Firestore (users/{userId}/chats).
+ * All participants listen to the same `chats/{chatId}` documents.
  */
 export function subscribeToChats(
   userId: string,
@@ -127,74 +200,71 @@ export function subscribeToChats(
   }
 
   const userKey = userId.toLowerCase().trim();
-  let isFirestoreActive = false;
+  let sharedList: ChatSession[] = [];
+  let didReceiveShared = false;
+  let didReceiveLegacy = false;
 
-  try {
-    const userChatsRef = collection(db, 'users', userKey, 'chats');
-    const q = query(userChatsRef, orderBy('updatedAt', 'desc'));
+  const emit = () => {
+    const merged = mergeChatLists(getLocalChatsForUser(userId), sharedList);
+    saveLocalChatsForUser(userId, merged);
+    onUpdate(merged);
+  };
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        isFirestoreActive = true;
-        const chats: ChatSession[] = [];
-        const localChats = getLocalChatsForUser(userId);
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data();
-          const remoteChat: ChatSession = {
-            id: docSnap.id,
-            title: data.title || 'Untitled',
-            createdAt: data.createdAt || Date.now(),
-            updatedAt: data.updatedAt || Date.now(),
-            model: data.model || DEFAULT_AI_MODEL,
-            messages: data.messages || [],
-            creator: data.creator || userId,
-            participants: data.participants || [userKey],
-          };
-          const localChat = localChats.find((c) => c.id === docSnap.id);
-          chats.push(preferRicherChat(localChat, remoteChat) || remoteChat);
-        });
+  const sharedQuery = query(
+    collection(db, 'chats'),
+    where('participants', 'array-contains', userKey)
+  );
 
-        // If Firestore has no chats yet for this user, but local cache does, backfill to Firestore!
-        if (chats.length === 0) {
-          const localChats = getLocalChatsForUser(userId);
-          if (localChats.length > 0) {
-            localChats.forEach(async (chat) => {
-              try {
-                await setDoc(doc(db, 'users', userKey, 'chats', chat.id), chat);
-              } catch (e) {
-                console.warn('Could not sync chat to Firestore:', e);
-              }
-            });
-            onUpdate(localChats);
-            return;
-          }
-        }
-
-        // Mirror to local cache for this user
-        saveLocalChatsForUser(userId, chats);
-        onUpdate(chats);
-      },
-      (error) => {
-        console.warn(`Firestore chats subscription notice for user ${userId}:`, error.message);
-        if (!isFirestoreActive) {
-          onUpdate(getLocalChatsForUser(userId));
-        }
+  const unsubShared = onSnapshot(
+    sharedQuery,
+    (snapshot) => {
+      didReceiveShared = true;
+      sharedList = [];
+      snapshot.forEach((docSnap) => {
+        sharedList.push(toSession(docSnap.id, docSnap.data() as Record<string, unknown>, userKey));
+      });
+      emit();
+    },
+    (error) => {
+      console.warn(`Shared chats subscription notice for ${userId}:`, error.message);
+      if (!didReceiveShared) {
+        onUpdate(getLocalChatsForUser(userId));
       }
-    );
+    }
+  );
 
-    return unsubscribe;
-  } catch (err) {
-    console.warn(`Firestore user chats query fallback for ${userId}:`, err);
-    onUpdate(getLocalChatsForUser(userId));
-    return () => {};
-  }
+  const legacyQuery = collection(db, 'users', userKey, 'chats');
+  const unsubLegacy = onSnapshot(
+    legacyQuery,
+    (snapshot) => {
+      didReceiveLegacy = true;
+      snapshot.forEach((docSnap) => {
+        const legacy = toSession(docSnap.id, docSnap.data() as Record<string, unknown>, userKey);
+        void migrateLegacyChatIfNeeded(userKey, legacy);
+      });
+      if (!didReceiveShared && snapshot.size > 0) {
+        const legacyChats: ChatSession[] = [];
+        snapshot.forEach((docSnap) => {
+          legacyChats.push(toSession(docSnap.id, docSnap.data() as Record<string, unknown>, userKey));
+        });
+        sharedList = mergeChatLists(sharedList, legacyChats);
+        emit();
+      }
+    },
+    (error) => {
+      console.warn(`Legacy chats subscription notice for ${userId}:`, error.message);
+      if (!didReceiveLegacy && !didReceiveShared) {
+        onUpdate(getLocalChatsForUser(userId));
+      }
+    }
+  );
+
+  return () => {
+    unsubShared();
+    unsubLegacy();
+  };
 }
 
-/**
- * Creates a new chat session for a specific user.
- * Supports text and attached images with non-blocking instant creation.
- */
 export async function createNewChat(
   userId: string,
   initialPrompt: string,
@@ -208,15 +278,6 @@ export async function createNewChat(
   const chatId = chatIdOverride || ('chat_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7));
   const now = Date.now();
   const finalAiMsgId = assistantMsgId || ('msg_ai_' + (now + 1));
-
-  console.log('🚀 [Rad Chat] createNewChat initiated:', {
-    userId,
-    chatId,
-    initialPromptLength: initialPrompt.length,
-    modelName,
-    imageCount: images?.length || 0,
-    hasStreamHandler: Boolean(onStreamUpdate),
-  });
 
   let title = initialPrompt.trim();
   if (!title && images && images.length > 0) {
@@ -254,31 +315,20 @@ export async function createNewChat(
     participants: [userKey],
   };
 
-  // 1. Immediately save initial session to user's local storage
-  const current = getLocalChatsForUser(userId);
-  saveLocalChatsForUser(userId, [newSession, ...current]);
-  console.log('💾 [Rad Storage] Initial session saved to local cache:', chatId);
+  saveLocalChatsForUser(userId, [newSession, ...getLocalChatsForUser(userId)]);
+  await persistSharedChat(newSession);
 
-  await persistChatForParticipants(newSession);
-  console.log('☁️ [Rad Firestore] Initial session synced to Firestore:', chatId);
-
-  // 3. Asynchronously request AI response with real-time token streaming via RapidRouter
-  (async () => {
+  void (async () => {
     try {
-      console.log('🤖 [Rad AI] Requesting RapidRouter Qwen 3.7 Flash streaming response for new chat...', { modelName });
       const aiContent = await requestRapidRouterChat(
         [{ role: 'user', content: initialPrompt, images: images && images.length > 0 ? images : undefined }],
         'qwen/qwen3.7-flash',
         (accumulated) => {
-          if (onStreamUpdate) {
-            onStreamUpdate(accumulated);
-          }
+          onStreamUpdate?.(accumulated);
         }
       );
 
-      console.log('✨ [Rad AI] Streaming response completed for new chat, length:', aiContent.length);
-
-      const latest = (await loadLatestChat(userId, chatId)) || newSession;
+      const latest = (await loadCanonicalChat(chatId, userId)) || newSession;
       const sessionToUpdate: ChatSession = {
         ...latest,
         messages: mergeMessages(latest.messages, newSession.messages).map((m) =>
@@ -301,9 +351,7 @@ export async function createNewChat(
         sessionToUpdate,
         ...getLocalChatsForUser(userId).filter((c) => c.id !== chatId),
       ]);
-
-      await persistChatForParticipants(sessionToUpdate);
-      console.log('☁️ [Rad Firestore] Final assistant response persisted to Firestore for chat:', chatId);
+      await persistSharedChat(sessionToUpdate);
     } catch (err: any) {
       console.error('❌ [Rad AI] Background AI request error for new chat:', err);
     }
@@ -312,10 +360,6 @@ export async function createNewChat(
   return chatId;
 }
 
-/**
- * Invites a user into an existing chat session.
- * Syncs the session to both users' Firestore subcollections and appends a system invite message.
- */
 export async function inviteUserToChat(
   inviterUsername: string,
   inviteeUsername: string,
@@ -324,23 +368,15 @@ export async function inviteUserToChat(
   const inviterKey = inviterUsername.toLowerCase().trim();
   const inviteeKey = inviteeUsername.toLowerCase().trim();
 
-  const fromInviter = await loadLatestChat(inviterUsername, chatId);
-  const fromInvitee = await loadLatestChat(inviteeUsername, chatId);
-  const fromInviterRemote = await fetchChatFromFirestore(inviterKey, chatId);
-  let target = preferRicherChat(
-    preferRicherChat(fromInviter, fromInviterRemote),
-    fromInvitee
-  );
+  const canonical = await loadCanonicalChat(chatId, inviterUsername);
+  const inviterLegacy = await fetchLegacyChat(inviterKey, chatId);
+  const inviteeLegacy = await fetchLegacyChat(inviteeKey, chatId);
+  let target = preferRicherChat(preferRicherChat(canonical, inviterLegacy), inviteeLegacy);
 
   if (!target) return null;
 
-  const currentParticipants = (target.participants || [inviterKey]).map((p) => p.toLowerCase().trim());
-  const updatedParticipants = currentParticipants.includes(inviteeKey)
-    ? currentParticipants
-    : [...currentParticipants, inviteeKey];
-
+  const alreadyJoined = uniqueParticipants(target.participants).includes(inviteeKey);
   const now = Date.now();
-  const alreadyJoined = currentParticipants.includes(inviteeKey);
   const inviteSystemMsg: ChatMessage = {
     id: 'msg_invite_' + now,
     role: 'assistant',
@@ -351,21 +387,23 @@ export async function inviteUserToChat(
 
   target = {
     ...target,
-    participants: updatedParticipants,
-    messages: alreadyJoined
-      ? target.messages
-      : mergeMessages(target.messages, [inviteSystemMsg]),
+    participants: uniqueParticipants(target.participants, [inviterKey, inviteeKey]),
+    messages: alreadyJoined ? target.messages : mergeMessages(target.messages, [inviteSystemMsg]),
     updatedAt: now,
   };
 
-  await persistChatForParticipants(target);
-  return target;
+  const saved = await persistSharedChat(target);
+  saveLocalChatsForUser(inviteeUsername, [
+    saved,
+    ...getLocalChatsForUser(inviteeUsername).filter((c) => c.id !== chatId),
+  ]);
+  saveLocalChatsForUser(inviterUsername, [
+    saved,
+    ...getLocalChatsForUser(inviterUsername).filter((c) => c.id !== chatId),
+  ]);
+  return saved;
 }
 
-/**
- * Starts a new chat on the inviter's side only.
- * The invitee receives the session after they accept the invite.
- */
 export async function createSharedChatWithUser(
   inviterUsername: string,
   inviteeUsername: string,
@@ -374,7 +412,6 @@ export async function createSharedChatWithUser(
   const inviterKey = inviterUsername.toLowerCase().trim();
   const chatId = 'chat_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
   const now = Date.now();
-  const title = `Chat with ${inviteeUsername}`;
 
   const welcomeMsg: ChatMessage = {
     id: 'msg_' + now,
@@ -386,7 +423,7 @@ export async function createSharedChatWithUser(
 
   const newSession: ChatSession = {
     id: chatId,
-    title,
+    title: `Chat with ${inviteeUsername}`,
     createdAt: now,
     updatedAt: now,
     model: modelName,
@@ -395,17 +432,11 @@ export async function createSharedChatWithUser(
     participants: [inviterKey],
   };
 
-  const inviterChats = getLocalChatsForUser(inviterUsername);
-  saveLocalChatsForUser(inviterUsername, [newSession, ...inviterChats]);
-  await persistChatForParticipants(newSession);
-
+  saveLocalChatsForUser(inviterUsername, [newSession, ...getLocalChatsForUser(inviterUsername)]);
+  await persistSharedChat(newSession);
   return chatId;
 }
 
-/**
- * Appends a message and AI response for a specific user's chat.
- * Supports text and attached images.
- */
 export async function sendChatMessage(
   userId: string,
   chatId: string,
@@ -419,15 +450,6 @@ export async function sendChatMessage(
   const now = Date.now();
   const finalAiMsgId = assistantMsgId || ('msg_ai_' + (now + 1));
 
-  console.log('🚀 [Rad Chat] sendChatMessage called:', {
-    userId,
-    chatId,
-    userPromptLength: userPrompt.length,
-    modelName,
-    imageCount: images?.length || 0,
-    hasStreamHandler: Boolean(onStreamUpdate),
-  });
-
   const userMsg: ChatMessage = {
     id: 'msg_' + now,
     role: 'user',
@@ -437,39 +459,36 @@ export async function sendChatMessage(
     ...(images && images.length > 0 ? { images } : {}),
   };
 
-  let target = await loadLatestChat(userId, chatId);
+  const placeholderAi: ChatMessage = {
+    id: finalAiMsgId,
+    role: 'assistant',
+    content: '',
+    createdAt: now + 1,
+    sender: 'Rad AI',
+    replyToUser: userId,
+  };
 
-  if (!target) {
+  const latest = await loadCanonicalChat(chatId, userId);
+  if (!latest) {
     console.error('❌ [Rad Chat] Target chat session not found for id:', chatId);
     return;
   }
 
-  const participantKeys = Array.from(
-    new Set((target.participants || [userKey]).map((p) => p.toLowerCase().trim()))
-  );
-  for (const p of participantKeys) {
-    const otherCopy = await fetchChatFromFirestore(p, chatId);
-    target = preferRicherChat(target, otherCopy) || target;
-  }
-
-  target = {
-    ...target,
-    messages: mergeMessages(target.messages, [userMsg]),
+  const withUserMsg: ChatSession = {
+    ...latest,
+    model: modelName || latest.model,
+    participants: uniqueParticipants(latest.participants, [userKey]),
+    messages: mergeMessages(latest.messages, [userMsg, placeholderAi]),
     updatedAt: now,
-    model: modelName || target.model,
-    participants: participantKeys,
   };
+
   saveLocalChatsForUser(userId, [
-    target,
+    withUserMsg,
     ...getLocalChatsForUser(userId).filter((c) => c.id !== chatId),
   ]);
-  console.log('💾 [Rad Storage] User message saved to local cache for chat:', chatId);
+  await persistSharedChat(withUserMsg);
 
-  await persistChatForParticipants(target);
-  const participants = target.participants || [userKey];
-
-  // 2. Request AI response from RapidRouter Qwen 3.7 Flash
-  const historyPayloads: ChatMessagePayload[] = target.messages
+  const historyPayloads: ChatMessagePayload[] = withUserMsg.messages
     .filter((m) => m.content && m.content.trim().length > 0)
     .map((m) => ({
       role: m.role,
@@ -477,26 +496,15 @@ export async function sendChatMessage(
       images: m.images,
     }));
 
-  console.log('🤖 [Rad AI] Requesting RapidRouter streaming inference for chat...', {
-    model: 'qwen/qwen3.7-flash',
-    historyCount: historyPayloads.length,
-    hasImages: historyPayloads.some((h) => h.images && h.images.length > 0),
-  });
-
   let aiContent = '';
   try {
     aiContent = await requestRapidRouterChat(historyPayloads, 'qwen/qwen3.7-flash', (accumulated) => {
-      if (onStreamUpdate) {
-        onStreamUpdate(accumulated);
-      }
+      onStreamUpdate?.(accumulated);
     });
-    console.log('✨ [Rad AI] RapidRouter streaming response completed for chat, length:', aiContent.length);
   } catch (err: any) {
     console.error('❌ [Rad AI] RapidRouter AI generation error:', err);
     aiContent = `⚠️ **AI Generation Error**: ${err?.message || 'Failed to generate response.'}`;
-    if (onStreamUpdate) {
-      onStreamUpdate(aiContent);
-    }
+    onStreamUpdate?.(aiContent);
   }
 
   const assistantMsg: ChatMessage = {
@@ -508,47 +516,45 @@ export async function sendChatMessage(
     replyToUser: userId,
   };
 
-  const latestBeforeAi = (await loadLatestChat(userId, chatId)) || target;
-  target = {
-    ...latestBeforeAi,
-    participants,
-    messages: mergeMessages(latestBeforeAi.messages, target.messages).map((m) =>
-      m.id === finalAiMsgId ? assistantMsg : m
-    ),
+  const afterStream = (await loadCanonicalChat(chatId, userId)) || withUserMsg;
+  const completed: ChatSession = {
+    ...afterStream,
+    participants: uniqueParticipants(afterStream.participants, [userKey]),
+    messages: mergeMessages(afterStream.messages, [userMsg, assistantMsg]),
     updatedAt: Date.now(),
   };
-  if (!target.messages.some((m) => m.id === finalAiMsgId)) {
-    target.messages = mergeMessages(target.messages, [assistantMsg]);
-  }
+
   saveLocalChatsForUser(userId, [
-    target,
+    completed,
     ...getLocalChatsForUser(userId).filter((c) => c.id !== chatId),
   ]);
-
-  await persistChatForParticipants(target);
+  await persistSharedChat(completed);
 }
 
-/**
- * Deletes a chat session for a user from both local cache and Firebase Firestore.
- */
 export async function deleteChatSession(userId: string, chatId: string): Promise<void> {
   const userKey = userId.toLowerCase().trim();
-  const currentChats = getLocalChatsForUser(userId);
-  const target = currentChats.find((c) => c.id === chatId);
-  const remaining = currentChats.filter((c) => c.id !== chatId);
+  const remaining = getLocalChatsForUser(userId).filter((c) => c.id !== chatId);
   saveLocalChatsForUser(userId, remaining);
 
-  const participants = target?.participants || [userKey];
-  for (const p of participants) {
-    try {
-      const pKey = p.toLowerCase().trim();
-      const pRemaining = getLocalChatsForUser(pKey).filter((c) => c.id !== chatId);
-      saveLocalChatsForUser(pKey, pRemaining);
-
-      const chatDocRef = doc(db, 'users', pKey, 'chats', chatId);
-      await deleteDoc(chatDocRef);
-    } catch (err) {
-      console.warn(`Firestore delete for ${p} notice:`, err);
+  try {
+    const shared = await loadCanonicalChat(chatId, userId);
+    if (!shared) {
+      await deleteDoc(legacyChatRef(userKey, chatId)).catch(() => undefined);
+      return;
     }
+
+    const nextParticipants = uniqueParticipants(shared.participants).filter((p) => p !== userKey);
+    if (nextParticipants.length === 0) {
+      await deleteDoc(sharedChatRef(chatId));
+    } else {
+      await persistSharedChat({
+        ...shared,
+        participants: nextParticipants,
+        updatedAt: Date.now(),
+      });
+    }
+    await deleteDoc(legacyChatRef(userKey, chatId)).catch(() => undefined);
+  } catch (err) {
+    console.warn(`Firestore delete for ${chatId} notice:`, err);
   }
 }
