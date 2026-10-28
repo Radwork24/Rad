@@ -90,14 +90,15 @@ async function loadLatestChat(userId: string, chatId: string): Promise<ChatSessi
 }
 
 async function persistChatForParticipants(chat: ChatSession): Promise<void> {
+  const participants = Array.from(
+    new Set((chat.participants || []).map((p) => p.toLowerCase().trim()).filter(Boolean))
+  );
   const payload = sanitizeChat({
     ...chat,
-    participants: Array.from(
-      new Set((chat.participants || []).map((p) => p.toLowerCase().trim()).filter(Boolean))
-    ),
+    participants,
   });
 
-  for (const p of payload.participants) {
+  for (const p of participants) {
     try {
       const existing = await fetchChatFromFirestore(p, payload.id);
       const merged = preferRicherChat(existing, payload) || payload;
