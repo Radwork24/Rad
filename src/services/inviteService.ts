@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { inviteUserToChat, createSharedChatWithUser } from './chatService';
+import type { ChatSession } from '../types/chat';
 
 export interface ChatInvite {
   id: string;
@@ -169,17 +170,20 @@ export function subscribeToSentInvites(
   }
 }
 
-export async function acceptChatInvite(invite: ChatInvite): Promise<void> {
-  await inviteUserToChat(invite.fromUsername, invite.toUsername, invite.chatId);
+export async function acceptChatInvite(invite: ChatInvite): Promise<ChatSession> {
+  const session = await inviteUserToChat(invite.fromUsername, invite.toUsername, invite.chatId);
+  if (!session) {
+    throw new Error('Shared chat could not be opened. Ask your friend to send the invite again.');
+  }
 
-  const updated: ChatInvite = { ...invite, status: 'accepted' };
   try {
-    await writeInviteCopies(updated);
     await deleteDoc(doc(incomingRef(invite.toUsername), invite.id));
     await deleteDoc(doc(sentRef(invite.fromUsername), invite.id));
   } catch (err) {
     console.warn('Could not clear accepted invite:', err);
   }
+
+  return session;
 }
 
 export async function declineChatInvite(invite: ChatInvite): Promise<void> {

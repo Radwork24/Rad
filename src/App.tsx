@@ -400,11 +400,14 @@ export default function App() {
 
   const handleAcceptInvite = async (invite: ChatInvite) => {
     try {
-      await acceptChatInvite(invite);
-      setActiveChatId(invite.chatId);
+      const session = await acceptChatInvite(invite);
+      setChats((prev) => mergeChatLists(prev, [session]));
+      setPendingChat(session);
+      setActiveChatId(session.id);
       setActiveView('dashboard');
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to accept invite:', err);
+      alert(err?.message || 'Could not open the shared chat.');
     }
   };
 

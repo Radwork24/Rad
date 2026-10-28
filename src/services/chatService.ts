@@ -367,12 +367,20 @@ export async function inviteUserToChat(
   const inviterKey = inviterUsername.toLowerCase().trim();
   const inviteeKey = inviteeUsername.toLowerCase().trim();
 
-  const canonical = await loadCanonicalChat(chatId, inviterUsername);
+  const fromShared = await fetchSharedChat(chatId);
+  const fromInviter = await loadCanonicalChat(chatId, inviterUsername);
+  const fromInvitee = await loadCanonicalChat(chatId, inviteeUsername);
   const inviterLegacy = await fetchLegacyChat(inviterKey, chatId);
   const inviteeLegacy = await fetchLegacyChat(inviteeKey, chatId);
-  let target = preferRicherChat(preferRicherChat(canonical, inviterLegacy), inviteeLegacy);
+  let target = preferRicherChat(
+    preferRicherChat(preferRicherChat(fromShared, fromInviter), fromInvitee),
+    preferRicherChat(inviterLegacy, inviteeLegacy)
+  );
 
-  if (!target) return null;
+  if (!target) {
+    console.error('❌ [Rad Chat] Shared chat not found to join:', chatId);
+    return null;
+  }
 
   const alreadyJoined = uniqueParticipants(target.participants).includes(inviteeKey);
   const now = Date.now();
@@ -392,6 +400,11 @@ export async function inviteUserToChat(
   };
 
   const saved = await persistSharedChat(target);
+  if (!uniqueParticipants(saved.participants).includes(inviteeKey)) {
+    saved.participants = uniqueParticipants(saved.participants, [inviteeKey]);
+    await persistSharedChat(saved);
+  }
+
   saveLocalChatsForUser(inviteeUsername, [
     saved,
     ...getLocalChatsForUser(inviteeUsername).filter((c) => c.id !== chatId),
