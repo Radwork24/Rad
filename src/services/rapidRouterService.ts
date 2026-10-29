@@ -14,10 +14,10 @@ const RAPIDROUTER_API_URL = 'https://rapidrouter.ai/api/v1/chat/completions';
 // Priority 3: deepinfra/deepseek-ai/deepseek-v4.1-flash
 // Priority 4: deepseek/deepseek-v4-flash
 export const DEFAULT_MODEL_CHAIN = [
-  'openai/gpt-6-luna',
   'qwen/qwen3.7-flash',
   'deepinfra/deepseek-ai/deepseek-v4.1-flash',
   'deepseek/deepseek-v4-flash',
+  'openai/gpt-6-luna',
 ];
 
 /**
