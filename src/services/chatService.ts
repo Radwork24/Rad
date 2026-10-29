@@ -12,7 +12,7 @@ import { db } from '../firebase';
 import type { ChatSession, ChatMessage } from '../types/chat';
 import { requestRapidRouterChat, type ChatMessagePayload } from './rapidRouterService';
 
-const DEFAULT_AI_MODEL = 'qwen/qwen3.7-flash';
+const DEFAULT_AI_MODEL = 'Rad 1.1 Flash';
 
 function getStorageKey(userId: string): string {
   return `rad_user_chats_${userId.toLowerCase().trim()}`;
@@ -321,7 +321,7 @@ export async function createNewChat(
     try {
       const aiContent = await requestRapidRouterChat(
         [{ role: 'user', content: initialPrompt, images: images && images.length > 0 ? images : undefined }],
-        'qwen/qwen3.7-flash',
+        undefined,
         (accumulated) => {
           onStreamUpdate?.(accumulated);
         }
@@ -510,12 +510,12 @@ export async function sendChatMessage(
 
   let aiContent = '';
   try {
-    aiContent = await requestRapidRouterChat(historyPayloads, 'qwen/qwen3.7-flash', (accumulated) => {
+    aiContent = await requestRapidRouterChat(historyPayloads, undefined, (accumulated) => {
       onStreamUpdate?.(accumulated);
     });
   } catch (err: any) {
-    console.error('❌ [Rad AI] RapidRouter AI generation error:', err);
-    aiContent = `⚠️ **AI Generation Error**: ${err?.message || 'Failed to generate response.'}`;
+    console.error('❌ [Rad AI] Generation error caught:', err);
+    aiContent = "I'm temporarily experiencing high demand. Please try sending your message again in a moment.";
     onStreamUpdate?.(aiContent);
   }
 

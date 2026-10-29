@@ -34,10 +34,11 @@ export interface AttachedImagePreview {
   name: string;
   dataUrl: string;
   size: number;
+  isPdf?: boolean;
 }
 
 const MODELS = [
-  { id: 'qwen/qwen3.7-flash', name: 'Rad 1.1 Flash', tag: 'Rad', desc: 'Ultra-fast Rad 1.1 Flash model — multimodal, built for speed and precision.' },
+  { id: 'Rad 1.1 Flash', name: 'Rad 1.1 Flash', tag: 'Rad', desc: 'Ultra-fast Rad 1.1 Flash model — multimodal, built for speed and precision.' },
 ];
 
 const SUGGESTIONS = [
@@ -153,41 +154,65 @@ export const Dashboard: React.FC<DashboardProps> = ({
     setPrompt(e.target.value);
   };
 
-  // Process image files with compression and add them to preview state
+  // Process image & PDF files with compression and add them to preview state
   const processImageFiles = async (files: FileList | File[]) => {
-    console.log('📸 [Rad Dashboard] Processing image files count:', files.length);
+    console.log('📸 [Rad Dashboard] Processing files count:', files.length);
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      if (!file.type.startsWith('image/')) {
-        console.warn('⚠️ [Rad Dashboard] Skipping non-image file:', file.name, file.type);
+      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      const isImage = file.type.startsWith('image/');
+
+      if (!isImage && !isPdf) {
+        console.warn('⚠️ [Rad Dashboard] Skipping non-image/non-pdf file:', file.name, file.type);
         continue;
       }
-      console.log(`📸 [Rad Dashboard] Reading image file: "${file.name}" (${file.type}, ${Math.round(file.size / 1024)} KB)`);
 
-      const reader = new FileReader();
-      reader.onload = async (loadEvent) => {
-        const rawDataUrl = loadEvent.target?.result as string;
-        if (rawDataUrl) {
-          try {
-            const compressedDataUrl = await compressImageDataUrl(rawDataUrl);
-            const imageItem: AttachedImagePreview = {
-              id: 'img_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-              name: file.name && file.name !== 'image.png' ? file.name : `Pasted Image`,
-              dataUrl: compressedDataUrl,
-              size: compressedDataUrl.length,
+      if (isPdf) {
+        console.log(`📄 [Rad Dashboard] Reading PDF file: "${file.name}" (${Math.round(file.size / 1024)} KB)`);
+        const reader = new FileReader();
+        reader.onload = (loadEvent) => {
+          const rawDataUrl = loadEvent.target?.result as string;
+          if (rawDataUrl) {
+            const pdfItem: AttachedImagePreview = {
+              id: 'pdf_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+              name: file.name,
+              dataUrl: rawDataUrl,
+              size: file.size,
+              isPdf: true,
             };
-            setPastedImages((prev) => [...prev, imageItem]);
-            console.log('✅ [Rad Dashboard] Attached image added to preview tray:', imageItem.id, imageItem.name);
-          } catch (compErr) {
-            console.error('❌ [Rad Dashboard] Compression error:', compErr);
+            setPastedImages((prev) => [...prev, pdfItem]);
+            console.log('✅ [Rad Dashboard] Attached PDF added to preview tray:', pdfItem.id, pdfItem.name);
           }
-        }
-      };
-      reader.readAsDataURL(file);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        console.log(`📸 [Rad Dashboard] Reading image file: "${file.name}" (${file.type}, ${Math.round(file.size / 1024)} KB)`);
+        const reader = new FileReader();
+        reader.onload = async (loadEvent) => {
+          const rawDataUrl = loadEvent.target?.result as string;
+          if (rawDataUrl) {
+            try {
+              const compressedDataUrl = await compressImageDataUrl(rawDataUrl);
+              const imageItem: AttachedImagePreview = {
+                id: 'img_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+                name: file.name && file.name !== 'image.png' ? file.name : `Pasted Image`,
+                dataUrl: compressedDataUrl,
+                size: compressedDataUrl.length,
+                isPdf: false,
+              };
+              setPastedImages((prev) => [...prev, imageItem]);
+              console.log('✅ [Rad Dashboard] Attached image added to preview tray:', imageItem.id, imageItem.name);
+            } catch (compErr) {
+              console.error('❌ [Rad Dashboard] Compression error:', compErr);
+            }
+          }
+        };
+        reader.readAsDataURL(file);
+      }
     }
   };
 
-  // Paste handler: allows pasting screenshots or copied images directly into input bar
+  // Paste handler: allows pasting screenshots, images, or PDFs directly into input bar
   const handlePaste = (e: React.ClipboardEvent) => {
     console.log('📋 [Rad Dashboard] Paste event captured on input bar');
     const files: File[] = [];
@@ -195,14 +220,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
     if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
       for (let i = 0; i < e.clipboardData.files.length; i++) {
         const file = e.clipboardData.files[i];
-        if (file.type.startsWith('image/')) files.push(file);
+        if (file.type.startsWith('image/') || file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+          files.push(file);
+        }
       }
     }
 
     if (files.length === 0 && e.clipboardData?.items) {
       for (let i = 0; i < e.clipboardData.items.length; i++) {
         const item = e.clipboardData.items[i];
-        if (item.type.indexOf('image') !== -1) {
+        if (item.type.indexOf('image') !== -1 || item.type.indexOf('pdf') !== -1) {
           const file = item.getAsFile();
           if (file) files.push(file);
         }
@@ -211,7 +238,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
     if (files.length > 0) {
       e.preventDefault();
-      console.log('📋 [Rad Dashboard] Found', files.length, 'pasted image(s) in clipboard');
+      console.log('📋 [Rad Dashboard] Found', files.length, 'pasted file(s) in clipboard');
       processImageFiles(files);
     }
   };
@@ -229,20 +256,24 @@ export const Dashboard: React.FC<DashboardProps> = ({
       const files: File[] = [];
       if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
         for (let i = 0; i < e.clipboardData.files.length; i++) {
-          if (e.clipboardData.files[i].type.startsWith('image/')) files.push(e.clipboardData.files[i]);
+          const file = e.clipboardData.files[i];
+          if (file.type.startsWith('image/') || file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+            files.push(file);
+          }
         }
       }
       if (files.length === 0 && e.clipboardData?.items) {
         for (let i = 0; i < e.clipboardData.items.length; i++) {
-          if (e.clipboardData.items[i].type.indexOf('image') !== -1) {
-            const f = e.clipboardData.items[i].getAsFile();
-            if (f) files.push(f);
+          const item = e.clipboardData.items[i];
+          if (item.type.indexOf('image') !== -1 || item.type.indexOf('pdf') !== -1) {
+            const file = item.getAsFile();
+            if (file) files.push(file);
           }
         }
       }
       if (files.length > 0) {
         e.preventDefault();
-        console.log('📋 [Rad Dashboard] Global window paste captured', files.length, 'image(s)');
+        console.log('📋 [Rad Dashboard] Global window paste captured', files.length, 'file(s)');
         processImageFiles(files);
       }
     };
@@ -304,7 +335,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
           .join('\n');
         text = text ? `${pageRefs}\n\n${text}` : `${pageRefs}\n\nPlease analyze and explain this attached document page picture.`;
       } else if (!text && hasImages) {
-        text = 'Please analyze this attached image.';
+        const hasPdf = pastedImages.some((img) => img.isPdf || img.dataUrl.startsWith('data:application/pdf'));
+        text = hasPdf ? 'Please analyze this attached PDF document.' : 'Please analyze this attached image.';
       }
 
       // Collect images from BOTH attached PDF pages AND pasted images
@@ -408,11 +440,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          {/* Hidden File Input for Image Upload */}
+          {/* Hidden File Input for Image & PDF Upload */}
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,application/pdf,.pdf"
             multiple
             onChange={handleFileInputChange}
             style={{ display: 'none' }}
@@ -461,33 +493,50 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </div>
           )}
 
-          {/* Pasted / Uploaded Image Previews Tray */}
+          {/* Pasted / Uploaded Image & PDF Previews Tray */}
           {pastedImages && pastedImages.length > 0 && (
             <div style={styles.imagesPreviewTray}>
-              {pastedImages.map((img) => (
-                <div key={img.id} style={styles.imageThumbnailCard} title={img.name}>
-                  <img
-                    src={img.dataUrl}
-                    alt={img.name}
-                    style={styles.thumbnailImg}
-                  />
-                  <div style={styles.thumbnailOverlay}>
-                    <span style={styles.thumbnailNameText}>{img.name}</span>
+              {pastedImages.map((img) => {
+                const isPdf = img.isPdf || img.dataUrl.startsWith('data:application/pdf') || img.name.toLowerCase().endsWith('.pdf');
+                return (
+                  <div key={img.id} style={isPdf ? styles.pdfThumbnailCard : styles.imageThumbnailCard} title={img.name}>
+                    {isPdf ? (
+                      <div style={styles.pdfThumbnailContent}>
+                        <div style={styles.pdfIconBadge}>
+                          <FilePdfIcon size={20} />
+                        </div>
+                        <div style={styles.pdfMetaInfo}>
+                          <span style={styles.pdfNameText}>{img.name}</span>
+                          <span style={styles.pdfSizeText}>{Math.round(img.size / 1024)} KB · PDF</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <img
+                          src={img.dataUrl}
+                          alt={img.name}
+                          style={styles.thumbnailImg}
+                        />
+                        <div style={styles.thumbnailOverlay}>
+                          <span style={styles.thumbnailNameText}>{img.name}</span>
+                        </div>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRemoveImage(img.id);
+                      }}
+                      style={styles.removeImageBtn}
+                      title="Remove file"
+                      aria-label="Remove file"
+                    >
+                      ✕
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRemoveImage(img.id);
-                    }}
-                    style={styles.removeImageBtn}
-                    title="Remove image"
-                    aria-label="Remove image"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -811,6 +860,58 @@ const styles: Record<string, React.CSSProperties> = {
     flexWrap: 'wrap',
     marginBottom: '12px',
     padding: '2px 0',
+  },
+  pdfThumbnailCard: {
+    position: 'relative',
+    height: '68px',
+    minWidth: '140px',
+    maxWidth: '240px',
+    borderRadius: '12px',
+    backgroundColor: '#1c1b18',
+    border: '1px solid #4a3830',
+    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.35)',
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    padding: '0 28px 0 12px',
+    gap: '8px',
+    cursor: 'pointer',
+    transition: 'transform 0.15s ease, border-color 0.15s ease',
+  },
+  pdfThumbnailContent: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    overflow: 'hidden',
+  },
+  pdfIconBadge: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '34px',
+    height: '34px',
+    borderRadius: '8px',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    color: '#ef4444',
+    flexShrink: 0,
+  },
+  pdfMetaInfo: {
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    minWidth: 0,
+  },
+  pdfNameText: {
+    fontSize: '12px',
+    fontWeight: 500,
+    color: '#f0ede6',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  pdfSizeText: {
+    fontSize: '10px',
+    color: '#8a857b',
   },
   imageThumbnailCard: {
     position: 'relative',

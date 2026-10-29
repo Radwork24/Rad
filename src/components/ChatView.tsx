@@ -40,6 +40,7 @@ export interface AttachedImagePreview {
   name: string;
   dataUrl: string;
   size: number;
+  isPdf?: boolean;
 }
 
 const USER_COLORS = [
@@ -193,41 +194,65 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  // Process image files with compression and add them to preview tray
+  // Process image & PDF files and add them to preview tray
   const processImageFiles = async (files: FileList | File[]) => {
-    console.log('📸 [Rad ChatView] Processing image files count:', files.length);
+    console.log('📸 [Rad ChatView] Processing files count:', files.length);
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      if (!file.type.startsWith('image/')) {
-        console.warn('⚠️ [Rad ChatView] Skipping non-image file:', file.name, file.type);
+      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      const isImage = file.type.startsWith('image/');
+
+      if (!isImage && !isPdf) {
+        console.warn('⚠️ [Rad ChatView] Skipping non-image/non-pdf file:', file.name, file.type);
         continue;
       }
-      console.log(`📸 [Rad ChatView] Reading image file: "${file.name}" (${file.type}, ${Math.round(file.size / 1024)} KB)`);
 
-      const reader = new FileReader();
-      reader.onload = async (loadEvent) => {
-        const rawDataUrl = loadEvent.target?.result as string;
-        if (rawDataUrl) {
-          try {
-            const compressedDataUrl = await compressImageDataUrl(rawDataUrl);
-            const imageItem: AttachedImagePreview = {
-              id: 'img_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-              name: file.name && file.name !== 'image.png' ? file.name : `Pasted Image`,
-              dataUrl: compressedDataUrl,
-              size: compressedDataUrl.length,
+      if (isPdf) {
+        console.log(`📄 [Rad ChatView] Reading PDF file: "${file.name}" (${Math.round(file.size / 1024)} KB)`);
+        const reader = new FileReader();
+        reader.onload = (loadEvent) => {
+          const rawDataUrl = loadEvent.target?.result as string;
+          if (rawDataUrl) {
+            const pdfItem: AttachedImagePreview = {
+              id: 'pdf_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+              name: file.name,
+              dataUrl: rawDataUrl,
+              size: file.size,
+              isPdf: true,
             };
-            setPastedImages((prev) => [...prev, imageItem]);
-            console.log('✅ [Rad ChatView] Attached image added to preview tray:', imageItem.id, imageItem.name);
-          } catch (compErr) {
-            console.error('❌ [Rad ChatView] Compression error:', compErr);
+            setPastedImages((prev) => [...prev, pdfItem]);
+            console.log('✅ [Rad ChatView] Attached PDF added to preview tray:', pdfItem.id, pdfItem.name);
           }
-        }
-      };
-      reader.readAsDataURL(file);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        console.log(`📸 [Rad ChatView] Reading image file: "${file.name}" (${file.type}, ${Math.round(file.size / 1024)} KB)`);
+        const reader = new FileReader();
+        reader.onload = async (loadEvent) => {
+          const rawDataUrl = loadEvent.target?.result as string;
+          if (rawDataUrl) {
+            try {
+              const compressedDataUrl = await compressImageDataUrl(rawDataUrl);
+              const imageItem: AttachedImagePreview = {
+                id: 'img_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+                name: file.name && file.name !== 'image.png' ? file.name : `Pasted Image`,
+                dataUrl: compressedDataUrl,
+                size: compressedDataUrl.length,
+                isPdf: false,
+              };
+              setPastedImages((prev) => [...prev, imageItem]);
+              console.log('✅ [Rad ChatView] Attached image added to preview tray:', imageItem.id, imageItem.name);
+            } catch (compErr) {
+              console.error('❌ [Rad ChatView] Compression error:', compErr);
+            }
+          }
+        };
+        reader.readAsDataURL(file);
+      }
     }
   };
 
-  // Paste handler: allows pasting screenshots or copied images directly into input bar
+  // Paste handler: allows pasting screenshots, images, or PDFs directly into input bar
   const handlePaste = (e: React.ClipboardEvent) => {
     console.log('📋 [Rad ChatView] Paste event captured on input bar');
     const files: File[] = [];
@@ -235,14 +260,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
       for (let i = 0; i < e.clipboardData.files.length; i++) {
         const file = e.clipboardData.files[i];
-        if (file.type.startsWith('image/')) files.push(file);
+        if (file.type.startsWith('image/') || file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+          files.push(file);
+        }
       }
     }
 
     if (files.length === 0 && e.clipboardData?.items) {
       for (let i = 0; i < e.clipboardData.items.length; i++) {
         const item = e.clipboardData.items[i];
-        if (item.type.indexOf('image') !== -1) {
+        if (item.type.indexOf('image') !== -1 || item.type.indexOf('pdf') !== -1) {
           const file = item.getAsFile();
           if (file) files.push(file);
         }
@@ -251,7 +278,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
     if (files.length > 0) {
       e.preventDefault();
-      console.log('📋 [Rad ChatView] Found', files.length, 'pasted image(s) in clipboard');
+      console.log('📋 [Rad ChatView] Found', files.length, 'pasted file(s) in clipboard');
       processImageFiles(files);
     }
   };
@@ -269,20 +296,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
       const files: File[] = [];
       if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
         for (let i = 0; i < e.clipboardData.files.length; i++) {
-          if (e.clipboardData.files[i].type.startsWith('image/')) files.push(e.clipboardData.files[i]);
+          const file = e.clipboardData.files[i];
+          if (file.type.startsWith('image/') || file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+            files.push(file);
+          }
         }
       }
       if (files.length === 0 && e.clipboardData?.items) {
         for (let i = 0; i < e.clipboardData.items.length; i++) {
-          if (e.clipboardData.items[i].type.indexOf('image') !== -1) {
-            const f = e.clipboardData.items[i].getAsFile();
-            if (f) files.push(f);
+          const item = e.clipboardData.items[i];
+          if (item.type.indexOf('image') !== -1 || item.type.indexOf('pdf') !== -1) {
+            const file = item.getAsFile();
+            if (file) files.push(file);
           }
         }
       }
       if (files.length > 0) {
         e.preventDefault();
-        console.log('📋 [Rad ChatView] Global window paste captured', files.length, 'image(s)');
+        console.log('📋 [Rad ChatView] Global window paste captured', files.length, 'file(s)');
         processImageFiles(files);
       }
     };
@@ -351,7 +382,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         .join('\n');
       text = text ? `${pageRefs}\n\n${text}` : `${pageRefs}\n\nPlease analyze and explain this attached document page picture.`;
     } else if (!text && hasImages) {
-      text = 'Please analyze this attached image.';
+      const hasPdf = pastedImages.some((img) => img.isPdf || img.dataUrl.startsWith('data:application/pdf'));
+      text = hasPdf ? 'Please analyze this attached PDF document.' : 'Please analyze this attached image.';
     }
 
     // Collect images from BOTH attached PDF pages AND pasted images
@@ -535,26 +567,52 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                   {/* Query Bubble */}
                   <div style={isSelf ? styles.userBubbleSelf : styles.userBubbleOther}>
-                    {/* Attached Images in user message */}
+                    {/* Attached Images & PDFs in user message */}
                     {msg.images && msg.images.length > 0 && (
                       <div style={styles.messageImagesRow}>
-                        {msg.images.map((imgUrl, idx) => (
-                          <div
-                            key={idx}
-                            style={styles.messageImageCard}
-                            onClick={() => setPreviewModalImage(imgUrl)}
-                            title="Click to view full image"
-                          >
-                            <img
-                              src={imgUrl}
-                              alt={`Attached screenshot ${idx + 1}`}
-                              style={styles.messageImageThumb}
-                            />
-                            <div style={styles.imageZoomHint}>
-                              <span>🔍 View</span>
+                        {msg.images.map((imgUrl, idx) => {
+                          const isPdf = imgUrl.startsWith('data:application/pdf') || imgUrl.includes('application/pdf');
+                          if (isPdf) {
+                            return (
+                              <div
+                                key={idx}
+                                style={styles.messagePdfCard}
+                                onClick={() => {
+                                  const win = window.open();
+                                  if (win) {
+                                    win.document.write(`<iframe src="${imgUrl}" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%;" allowfullscreen></iframe>`);
+                                  }
+                                }}
+                                title="Click to view PDF document"
+                              >
+                                <div style={styles.pdfIconBadge}>
+                                  <FilePdfIcon size={22} />
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
+                                  <span style={{ fontSize: '13px', fontWeight: 600, color: '#f3f4f6' }}>PDF Document</span>
+                                  <span style={{ fontSize: '11px', color: '#9ca3af' }}>Click to view ↗</span>
+                                </div>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div
+                              key={idx}
+                              style={styles.messageImageCard}
+                              onClick={() => setPreviewModalImage(imgUrl)}
+                              title="Click to view full image"
+                            >
+                              <img
+                                src={imgUrl}
+                                alt={`Attached screenshot ${idx + 1}`}
+                                style={styles.messageImageThumb}
+                              />
+                              <div style={styles.imageZoomHint}>
+                                <span>🔍 View</span>
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                     {msg.content}
@@ -647,11 +705,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Docked Bottom Chat Input Bar */}
       <div style={styles.bottomBarContainer}>
-        {/* Hidden File Picker for Image Upload */}
+        {/* Hidden File Picker for Image & PDF Upload */}
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,application/pdf,.pdf"
           multiple
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
@@ -700,33 +758,50 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
         )}
 
-        {/* Pasted / Uploaded Image Previews Tray */}
+        {/* Pasted / Uploaded Image & PDF Previews Tray */}
         {pastedImages && pastedImages.length > 0 && (
           <div style={styles.imagesPreviewTray}>
-            {pastedImages.map((img) => (
-              <div key={img.id} style={styles.imageThumbnailCard} title={img.name}>
-                <img
-                  src={img.dataUrl}
-                  alt={img.name}
-                  style={styles.thumbnailImg}
-                />
-                <div style={styles.thumbnailOverlay}>
-                  <span style={styles.thumbnailNameText}>{img.name}</span>
+            {pastedImages.map((img) => {
+              const isPdf = img.isPdf || img.dataUrl.startsWith('data:application/pdf') || img.name.toLowerCase().endsWith('.pdf');
+              return (
+                <div key={img.id} style={isPdf ? styles.pdfThumbnailCard : styles.imageThumbnailCard} title={img.name}>
+                  {isPdf ? (
+                    <div style={styles.pdfThumbnailContent}>
+                      <div style={styles.pdfIconBadge}>
+                        <FilePdfIcon size={20} />
+                      </div>
+                      <div style={styles.pdfMetaInfo}>
+                        <span style={styles.pdfNameText}>{img.name}</span>
+                        <span style={styles.pdfSizeText}>{Math.round(img.size / 1024)} KB · PDF</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <img
+                        src={img.dataUrl}
+                        alt={img.name}
+                        style={styles.thumbnailImg}
+                      />
+                      <div style={styles.thumbnailOverlay}>
+                        <span style={styles.thumbnailNameText}>{img.name}</span>
+                      </div>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRemoveImage(img.id);
+                    }}
+                    style={styles.removeImageBtn}
+                    title="Remove file"
+                    aria-label="Remove file"
+                  >
+                    ✕
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleRemoveImage(img.id);
-                  }}
-                  style={styles.removeImageBtn}
-                  title="Remove image"
-                  aria-label="Remove image"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -743,7 +818,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             type="button"
             onClick={() => fileInputRef.current?.click()}
             style={styles.plusBtn}
-            title="Attach image or content"
+            title="Attach image or PDF"
             aria-label="Attach file"
           >
             <PlusIcon size={16} />
@@ -1626,6 +1701,70 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '8px',
     flexWrap: 'wrap',
     marginBottom: '8px',
+  },
+  pdfThumbnailCard: {
+    position: 'relative',
+    height: '60px',
+    minWidth: '130px',
+    maxWidth: '220px',
+    borderRadius: '10px',
+    backgroundColor: '#1c1b18',
+    border: '1px solid #4a3830',
+    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.35)',
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    padding: '0 26px 0 10px',
+    gap: '8px',
+    cursor: 'pointer',
+  },
+  pdfThumbnailContent: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    overflow: 'hidden',
+  },
+  pdfIconBadge: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '32px',
+    height: '32px',
+    borderRadius: '6px',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    color: '#ef4444',
+    flexShrink: 0,
+  },
+  pdfMetaInfo: {
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    minWidth: 0,
+  },
+  pdfNameText: {
+    fontSize: '11px',
+    fontWeight: 500,
+    color: '#f0ede6',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  pdfSizeText: {
+    fontSize: '9.5px',
+    color: '#8a857b',
+  },
+  messagePdfCard: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '10px 16px',
+    borderRadius: '12px',
+    backgroundColor: 'rgba(25, 24, 22, 0.85)',
+    border: '1px solid rgba(239, 68, 68, 0.3)',
+    cursor: 'pointer',
+    transition: 'all 0.15s ease',
+    maxWidth: '320px',
+    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.25)',
   },
   messageImageCard: {
     position: 'relative',
