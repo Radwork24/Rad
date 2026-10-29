@@ -193,10 +193,21 @@ async function executeStreamAttempt(
   const payload: any = {
     model,
     messages,
-    temperature: 0.6,
     max_tokens: 4096,
     stream: true,
   };
+
+  // Modern reasoning models (such as GPT-6 Luna and OpenAI o-series) strictly reject custom temperature with HTTP 400.
+  // Only include temperature for standard models (Qwen, DeepSeek, etc.)
+  if (
+    !model.includes('luna') &&
+    !model.includes('gpt-6') &&
+    !model.includes('o1') &&
+    !model.includes('o3') &&
+    !model.includes('o4')
+  ) {
+    payload.temperature = 0.6;
+  }
 
   const response = await fetch(RAPIDROUTER_API_URL, {
     method: 'POST',
