@@ -8,16 +8,10 @@ import { optimizeConversationContext } from '../utils/contextManager';
 
 const RAPIDROUTER_API_URL = 'https://rapidrouter.ai/api/v1/chat/completions';
 
-// Default model priority chain:
-// Priority 1: openai/gpt-6-luna (supports PDF natively)
-// Priority 2: qwen/qwen3.7-flash (standard Rad model)
-// Priority 3: deepinfra/deepseek-ai/deepseek-v4.1-flash
-// Priority 4: deepseek/deepseek-v4-flash
+// Active AI Model:
+// deepinfra/deepseek-ai/deepseek-v4.1-flash (DeepSeek 4.1 Flash)
 export const DEFAULT_MODEL_CHAIN = [
-  'qwen/qwen3.7-flash',
   'deepinfra/deepseek-ai/deepseek-v4.1-flash',
-  'deepseek/deepseek-v4-flash',
-  'openai/gpt-6-luna',
 ];
 
 /**
@@ -59,13 +53,8 @@ export function containsPdfAttachment(history: ChatMessagePayload[]): boolean {
 
 /**
  * Returns candidate models in priority order.
- * If a PDF attachment is present, only openai/gpt-6-luna is used as requested.
  */
-export function getRapidRouterFallbackModels(hasPdf: boolean = false): string[] {
-  if (hasPdf) {
-    return ['openai/gpt-6-luna'];
-  }
-
+export function getRapidRouterFallbackModels(_hasPdf: boolean = false): string[] {
   const envModels = import.meta.env.RAPIDROUTER_MODELS;
   if (envModels) {
     const parsed = envModels
@@ -79,7 +68,7 @@ export function getRapidRouterFallbackModels(hasPdf: boolean = false): string[] 
 }
 
 export function getDefaultRapidRouterModel(): string {
-  return getRapidRouterFallbackModels(false)[0];
+  return getRapidRouterFallbackModels()[0];
 }
 
 export interface ChatMessagePayload {
@@ -99,6 +88,23 @@ export function stripThinking(text: string): string {
     cleaned = cleaned.replace(/<think>[\s\S]*$/gi, '');
   }
   cleaned = cleaned.replace(/<\/think>/gi, '');
+  return cleaned.trimStart();
+}
+
+/**
+ * Lightweight version of stripThinking for real-time streaming:
+ * Only suppresses content while inside an open <think> block.
+ * Does NOT run heavy regex on the full accumulated string every chunk.
+ */
+function liveStripThinking(accumulated: string): string {
+  // Fast path: no think tags at all
+  if (!accumulated.includes('<think>')) return accumulated;
+  // Remove completed <think>...</think> blocks
+  let cleaned = accumulated.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  // Hide content of an in-progress (unclosed) <think> block
+  if (cleaned.includes('<think>')) {
+    cleaned = cleaned.replace(/<think>[\s\S]*$/i, '');
+  }
   return cleaned.trimStart();
 }
 
@@ -234,6 +240,10 @@ async function executeStreamAttempt(
   const decoder = new TextDecoder('utf-8');
   let accumulated = '';
   let buffer = '';
+  // Track if we are inside a <think> block to skip passing chunks while reasoning
+  let inThinkBlock = false;
+  // Flag: has the first visible token been delivered (TTFT)
+  let ttftDelivered = false;
 
   try {
     while (true) {
@@ -257,13 +267,27 @@ async function executeStreamAttempt(
           const parsed = JSON.parse(dataStr);
           const delta = parsed.choices?.[0]?.delta;
           if (delta) {
-            // Specifically ignore reasoning_content from deepseek models
+            // Skip reasoning_content from deepseek models
             const chunk = delta.content || '';
             if (chunk) {
               accumulated += chunk;
-              const cleaned = stripThinking(accumulated);
-              if (onChunk) {
-                onChunk(cleaned, chunk);
+
+              // Cheap think-block tracking — no heavy regex on full string
+              if (chunk.includes('<think>')) inThinkBlock = true;
+              if (chunk.includes('</think>')) inThinkBlock = false;
+
+              // Only call onChunk when we are outside a <think> block
+              if (!inThinkBlock && onChunk) {
+                // For TTFT: first visible chunk triggers immediately using
+                // liveStripThinking only if think tags were ever seen
+                const visibleText = accumulated.includes('<think>')
+                  ? liveStripThinking(accumulated)
+                  : accumulated;
+
+                if (visibleText.trim() || ttftDelivered) {
+                  ttftDelivered = true;
+                  onChunk(visibleText, chunk);
+                }
               }
             }
           }
@@ -276,6 +300,7 @@ async function executeStreamAttempt(
     reader.releaseLock();
   }
 
+  // Final clean pass — only runs once at the very end
   const finalResult = stripThinking(accumulated);
   if (!finalResult.trim()) {
     throw new Error('Empty response received.');
@@ -296,15 +321,12 @@ export async function requestRapidRouterChat(
   const keys = getRapidRouterApiKeys();
   const hasPdf = containsPdfAttachment(history);
 
-  // Determine model fallback sequence
+  // Candidate model list (DeepSeek 4.1 Flash)
   let candidateModels: string[];
-  if (hasPdf) {
-    // PDF upload is only supported on gpt-6-luna
-    candidateModels = ['openai/gpt-6-luna'];
-  } else if (modelOverride && modelOverride !== 'Rad 1.1 Flash' && !modelOverride.includes('qwen')) {
-    candidateModels = [modelOverride, ...getRapidRouterFallbackModels(false).filter((m) => m !== modelOverride)];
+  if (modelOverride && modelOverride !== 'Rad 1.1 Flash') {
+    candidateModels = [modelOverride, ...getRapidRouterFallbackModels().filter((m) => m !== modelOverride)];
   } else {
-    candidateModels = getRapidRouterFallbackModels(false);
+    candidateModels = getRapidRouterFallbackModels();
   }
 
   const messages = buildMessages(history);

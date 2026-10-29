@@ -261,28 +261,73 @@ export default function App() {
 
     console.log('🚀 [Rad App] Instantly transitioned to ChatView with streaming session:', newChatId);
 
-    const handleStreamUpdate = (streamedText: string) => {
-      setPendingChat((prev) => {
-        if (!prev || prev.id !== newChatId) return prev;
-        return {
-          ...prev,
-          messages: prev.messages.map((m) =>
-            m.id === aiMsgId ? { ...m, content: streamedText } : m
-          ),
-        };
-      });
+    // RAF-throttled stream handler:
+    // - First chunk fires IMMEDIATELY for instant TTFT (user sees text right away)
+    // - Subsequent chunks are batched at ~60fps to avoid flooding React with re-renders
+    let rafHandle: number | null = null;
+    let latestStreamText = '';
+    let firstChunkDelivered = false;
 
-      setChats((prev) =>
-        prev.map((c) => {
-          if (c.id !== newChatId) return c;
+    const handleStreamUpdate = (streamedText: string) => {
+      latestStreamText = streamedText;
+
+      if (!firstChunkDelivered) {
+        // Fire the very first visible chunk synchronously — zero delay TTFT
+        firstChunkDelivered = true;
+        const applyUpdate = (text: string) => {
+          setPendingChat((prev) => {
+            if (!prev || prev.id !== newChatId) return prev;
+            return {
+              ...prev,
+              messages: prev.messages.map((m) =>
+                m.id === aiMsgId ? { ...m, content: text } : m
+              ),
+            };
+          });
+
+          setChats((prev) =>
+            prev.map((c) => {
+              if (c.id !== newChatId) return c;
+              return {
+                ...c,
+                messages: c.messages.map((m) =>
+                  m.id === aiMsgId ? { ...m, content: text } : m
+                ),
+              };
+            })
+          );
+        };
+        applyUpdate(streamedText);
+        return;
+      }
+
+      // Subsequent chunks: schedule a single RAF batch (deduplicated)
+      if (rafHandle !== null) return;
+      rafHandle = requestAnimationFrame(() => {
+        rafHandle = null;
+        const text = latestStreamText;
+        setPendingChat((prev) => {
+          if (!prev || prev.id !== newChatId) return prev;
           return {
-            ...c,
-            messages: c.messages.map((m) =>
-              m.id === aiMsgId ? { ...m, content: streamedText } : m
+            ...prev,
+            messages: prev.messages.map((m) =>
+              m.id === aiMsgId ? { ...m, content: text } : m
             ),
           };
-        })
-      );
+        });
+
+        setChats((prev) =>
+          prev.map((c) => {
+            if (c.id !== newChatId) return c;
+            return {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === aiMsgId ? { ...m, content: text } : m
+              ),
+            };
+          })
+        );
+      });
     };
 
     // 3. Persist session and stream AI completion in real-time
@@ -346,18 +391,50 @@ export default function App() {
       )
     );
 
+    // RAF-throttled stream handler:
+    // - First chunk fires IMMEDIATELY for instant TTFT
+    // - Subsequent chunks are batched at ~60fps
+    let rafHandleChat: number | null = null;
+    let latestChatStreamText = '';
+    let firstChatChunkDelivered = false;
+
     const handleStreamUpdate = (streamedText: string) => {
-      setChats((prev) =>
-        prev.map((c) => {
-          if (c.id !== activeChatId) return c;
-          return {
-            ...c,
-            messages: c.messages.map((m) =>
-              m.id === aiMsgId ? { ...m, content: streamedText } : m
-            ),
-          };
-        })
-      );
+      latestChatStreamText = streamedText;
+
+      if (!firstChatChunkDelivered) {
+        // Deliver first visible token immediately — zero-delay TTFT
+        firstChatChunkDelivered = true;
+        setChats((prev) =>
+          prev.map((c) => {
+            if (c.id !== activeChatId) return c;
+            return {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === aiMsgId ? { ...m, content: streamedText } : m
+              ),
+            };
+          })
+        );
+        return;
+      }
+
+      // All subsequent chunks: batch to 60fps
+      if (rafHandleChat !== null) return;
+      rafHandleChat = requestAnimationFrame(() => {
+        rafHandleChat = null;
+        const text = latestChatStreamText;
+        setChats((prev) =>
+          prev.map((c) => {
+            if (c.id !== activeChatId) return c;
+            return {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === aiMsgId ? { ...m, content: text } : m
+              ),
+            };
+          })
+        );
+      });
     };
 
     try {
