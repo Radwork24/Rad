@@ -480,26 +480,30 @@ export async function sendChatMessage(
     replyToUser: userId,
   };
 
-  const latest = await loadCanonicalChat(chatId, userId);
-  if (!latest) {
+  // ── Use local cache immediately — zero network wait ──────────────────────
+  const localChats = getLocalChatsForUser(userId);
+  const localSession = localChats.find((c) => c.id === chatId);
+
+  if (!localSession) {
     console.error('❌ [Rad Chat] Target chat session not found for id:', chatId);
     return;
   }
 
   const withUserMsg: ChatSession = {
-    ...latest,
-    model: modelName || latest.model,
-    participants: uniqueParticipants(latest.participants, [userKey]),
-    messages: mergeMessages(latest.messages, [userMsg, placeholderAi]),
+    ...localSession,
+    model: modelName || localSession.model,
+    participants: uniqueParticipants(localSession.participants, [userKey]),
+    messages: mergeMessages(localSession.messages, [userMsg, placeholderAi]),
     updatedAt: now,
   };
 
+  // Save to local cache instantly
   saveLocalChatsForUser(userId, [
     withUserMsg,
-    ...getLocalChatsForUser(userId).filter((c) => c.id !== chatId),
+    ...localChats.filter((c) => c.id !== chatId),
   ]);
-  await persistSharedChat(withUserMsg);
 
+  // Build history from local state
   const historyPayloads: ChatMessagePayload[] = withUserMsg.messages
     .filter((m) => m.content && m.content.trim().length > 0)
     .map((m) => ({
@@ -508,17 +512,24 @@ export async function sendChatMessage(
       images: m.images,
     }));
 
-  let aiContent = '';
-  try {
-    aiContent = await requestRapidRouterChat(historyPayloads, undefined, (accumulated) => {
+  // ── Fire AI + Firestore sync in parallel — AI is NOT blocked by Firestore ─
+  const [aiContent] = await Promise.all([
+    requestRapidRouterChat(historyPayloads, undefined, (accumulated) => {
       onStreamUpdate?.(accumulated);
-    });
-  } catch (err: any) {
-    console.error('❌ [Rad AI] Generation error caught:', err);
-    aiContent = "I'm temporarily experiencing high demand. Please try sending your message again in a moment.";
-    onStreamUpdate?.(aiContent);
-  }
+    }).catch((err: any) => {
+      console.error('❌ [Rad AI] Generation error caught:', err);
+      const msg = "I'm temporarily experiencing high demand. Please try sending your message again in a moment.";
+      onStreamUpdate?.(msg);
+      return msg;
+    }),
 
+    // Firestore write runs in background — doesn't delay the AI
+    persistSharedChat(withUserMsg).catch((e) =>
+      console.warn('[Rad Chat] Background Firestore sync:', e)
+    ),
+  ]);
+
+  // ── Persist final AI response ─────────────────────────────────────────────
   const assistantMsg: ChatMessage = {
     id: finalAiMsgId,
     role: 'assistant',

@@ -186,7 +186,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 : 'transparent',
           }}
         >
-          <PlusIcon size={15} />
+          <span style={styles.navIconWrapper}>
+            <PlusIcon size={15} />
+          </span>
           <span>New</span>
         </button>
 
@@ -202,7 +204,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             fontWeight: activeView === 'notebooks' ? 500 : 450,
           }}
         >
-          <NotebooksIcon size={16} />
+          <span style={styles.navIconWrapper}>
+            <NotebooksIcon size={16} />
+          </span>
           <span>Notebooks</span>
         </button>
 
@@ -218,7 +222,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             fontWeight: activeView === 'shared' ? 500 : 450,
           }}
         >
-          <SharedIcon size={16} />
+          <span style={styles.navIconWrapper}>
+            <SharedIcon size={16} />
+          </span>
           <span>Shared Contents</span>
         </button>
       </div>
@@ -498,7 +504,7 @@ const styles: Record<string, React.CSSProperties> = {
   navItem: {
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     gap: '10px',
     padding: '8px 10px',
     borderRadius: '8px',
@@ -509,10 +515,13 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'left',
     width: '100%',
   },
-  navItemLeft: {
-    display: 'flex',
+  navIconWrapper: {
+    display: 'inline-flex',
     alignItems: 'center',
-    gap: '10px',
+    justifyContent: 'center',
+    width: '18px',
+    height: '18px',
+    flexShrink: 0,
   },
   newChatBtn: {
     color: '#ece8df',

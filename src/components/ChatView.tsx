@@ -18,6 +18,55 @@ import {
 } from './Icons';
 import type { AttachedPage } from '../types/notebook';
 
+// ── Live elapsed-time counter shown while Rad is generating ─────────────────
+function ThinkingTimer() {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef(Date.now());
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    startRef.current = Date.now();
+    const tick = () => {
+      setElapsed(Date.now() - startRef.current);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, []);
+
+  const seconds = (elapsed / 1000).toFixed(1);
+  // SVG spinner arc — progresses every second, loops every 3s
+  const cycle = (elapsed % 3000) / 3000;
+  const circumference = 2 * Math.PI * 9; // r=9
+  const dashOffset = circumference * (1 - cycle);
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#9c978e', fontSize: '13.5px' }}>
+      {/* Spinning arc ring */}
+      <svg width="22" height="22" viewBox="0 0 22 22" style={{ flexShrink: 0 }}>
+        {/* Track */}
+        <circle cx="11" cy="11" r="9" fill="none" stroke="#36342e" strokeWidth="2" />
+        {/* Animated arc */}
+        <circle
+          cx="11" cy="11" r="9"
+          fill="none"
+          stroke="var(--accent-terracotta, #c97d4e)"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+          style={{ transform: 'rotate(-90deg)', transformOrigin: '11px 11px', transition: 'stroke-dashoffset 0.1s linear' }}
+        />
+      </svg>
+      {/* Timer digits */}
+      <span style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '0.02em' }}>
+        <span style={{ color: 'var(--accent-terracotta, #c97d4e)', fontWeight: 600 }}>{seconds}s</span>
+        <span style={{ marginLeft: '6px', fontSize: '12px' }}>generating…</span>
+      </span>
+    </div>
+  );
+}
+
 interface ChatViewProps {
   chat: ChatSession;
   isSidebarOpen: boolean;
@@ -43,24 +92,7 @@ export interface AttachedImagePreview {
   isPdf?: boolean;
 }
 
-const USER_COLORS = [
-  '#ec4899', // Pink
-  '#10b981', // Emerald
-  '#3b82f6', // Blue
-  '#f59e0b', // Amber
-  '#8b5cf6', // Violet
-  '#d97757', // Terracotta
-  '#06b6d4', // Cyan
-];
 
-const getUserColor = (name: string) => {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const idx = Math.abs(hash) % USER_COLORS.length;
-  return USER_COLORS[idx];
-};
 
 export const ChatView: React.FC<ChatViewProps> = ({
   chat,
@@ -461,14 +493,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <div style={styles.avatarStack}>
                 {chat.participants.slice(0, 3).map((p) => {
                   const pInitial = p.charAt(0).toUpperCase();
-                  const pColor = getUserColor(p);
                   return (
                     <div
                       key={p}
-                      style={{
-                        ...styles.stackAvatar,
-                        backgroundColor: pColor,
-                      }}
+                      style={styles.stackAvatar}
                       title={p}
                     >
                       {pInitial}
@@ -536,7 +564,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 (u) => u.username.toLowerCase().trim() === senderName.toLowerCase().trim()
               );
               const senderInitial = senderName.charAt(0).toUpperCase();
-              const userColor = getUserColor(senderName);
 
               return (
                 <div
@@ -545,7 +572,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 >
                   {/* Sender Header Badge */}
                   <div style={isSelf ? styles.userHeaderSelf : styles.userHeaderOther}>
-                    <div style={{ ...styles.userAvatarMini, backgroundColor: userColor }}>
+                    <div style={styles.userAvatarMini}>
                       {senderInitial}
                     </div>
                     <span style={styles.userNameBadge}>
@@ -645,12 +672,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       >
                         <ReplyIcon size={12} />
                         <span style={styles.replyToLabel}>Replying to</span>
-                        <span
-                          style={{
-                            ...styles.replyMiniAvatar,
-                            backgroundColor: getUserColor(replyTo),
-                          }}
-                        >
+                        <span style={styles.replyMiniAvatar}>
                           {replyTo.charAt(0).toUpperCase()}
                         </span>
                         <span style={styles.replyTargetName}>
@@ -667,10 +689,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   {msg.content ? (
                     <MarkdownView content={msg.content} />
                   ) : (
-                    <div style={styles.thinkingPill}>
-                      <span style={styles.pulsingDot} />
-                      <span>Rad is thinking...</span>
-                    </div>
+                    <ThinkingTimer />
                   )}
                 </div>
               </div>
@@ -681,10 +700,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           {chat.messages.length > 0 &&
             chat.messages[chat.messages.length - 1].role === 'user' && (
               <div style={styles.assistantRow}>
-                <div style={styles.thinkingPill}>
-                  <span style={styles.pulsingDot} />
-                  <span>Rad is thinking...</span>
-                </div>
+                <ThinkingTimer />
               </div>
             )}
 
@@ -938,16 +954,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     const isPending = pendingInviteUsernames.some(
                       (name) => name.toLowerCase().trim() === u.username.toLowerCase().trim()
                     );
-                    const color = getUserColor(u.username);
                     return (
                       <div key={u.username} style={styles.modalUserRow}>
                         <div style={styles.modalUserLeft}>
-                          <div
-                            style={{
-                              ...styles.modalUserAvatar,
-                              backgroundColor: color,
-                            }}
-                          >
+                          <div style={styles.modalUserAvatar}>
                             {u.username.charAt(0).toUpperCase()}
                           </div>
                           <div>
@@ -1074,14 +1084,14 @@ const styles: Record<string, React.CSSProperties> = {
     height: '18px',
     borderRadius: '50%',
     fontSize: '9px',
-    fontWeight: 700,
+    fontWeight: 600,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    color: 'rgba(255, 255, 255, 0.85)',
-    backgroundColor: 'transparent',
+    color: '#ffffff',
+    backgroundColor: '#000000',
     marginLeft: '-5px',
-    border: '1.5px solid rgba(255, 255, 255, 0.4)',
+    border: '1.5px solid rgba(255, 255, 255, 0.35)',
   },
   participantsCountText: {
     color: 'rgba(255, 255, 255, 0.75)',
@@ -1231,16 +1241,19 @@ const styles: Record<string, React.CSSProperties> = {
     paddingLeft: '4px',
   },
   userAvatarMini: {
-    width: '20px',
-    height: '20px',
+    width: '22px',
+    height: '22px',
     borderRadius: '50%',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontSize: '10.5px',
-    fontWeight: 700,
+    fontSize: '11px',
+    fontWeight: 600,
     color: '#ffffff',
+    backgroundColor: '#000000',
+    border: '1.5px solid rgba(255, 255, 255, 0.35)',
     boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+    flexShrink: 0,
   },
   userNameBadge: {
     fontSize: '12px',
@@ -1348,15 +1361,18 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#7a756c',
   },
   replyMiniAvatar: {
-    width: '14px',
-    height: '14px',
+    width: '15px',
+    height: '15px',
     borderRadius: '50%',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontSize: '8.5px',
-    fontWeight: 700,
+    fontWeight: 600,
     color: '#ffffff',
+    backgroundColor: '#000000',
+    border: '1px solid rgba(255, 255, 255, 0.35)',
+    flexShrink: 0,
   },
   replyTargetName: {
     color: 'var(--accent-terracotta)',
@@ -1486,6 +1502,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '12px',
     fontWeight: 600,
     color: '#ffffff',
+    backgroundColor: '#000000',
+    border: '1.5px solid rgba(255, 255, 255, 0.35)',
+    flexShrink: 0,
   },
   modalUserName: {
     fontSize: '13px',

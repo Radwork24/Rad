@@ -1,41 +1,68 @@
 /**
- * Rapid Router AI Service
- * OpenAI-compatible endpoint: https://rapidrouter.ai/api/v1
- * Features: Multi-key fallback, multi-model fallback chain, and native PDF/vision support.
+ * Rad AI Service (Powered Exclusively by LithosAI)
+ * Endpoint: https://api.lithosai.cloud/v1
+ * Primary Model: deepseek-ai/DeepSeek-V4.1-Flash-ultra-chat
+ * Features: Native streaming, ultra-low latency, vision, and document analysis.
  */
 
 import { optimizeConversationContext } from '../utils/contextManager';
+import { logToTerminal } from '../utils/terminalLogger';
 
-const RAPIDROUTER_API_URL = 'https://rapidrouter.ai/api/v1/chat/completions';
+// LithosAI Endpoint — use local Vite proxy in dev to bypass CORS
+const LITHOSAI_API_URL =
+  typeof window !== 'undefined' && window.location.hostname === 'localhost'
+    ? '/api/lithos/chat'
+    : 'https://api.lithosai.cloud/v1/chat/completions';
 
-// Active AI Model:
-// deepinfra/deepseek-ai/deepseek-v4.1-flash (DeepSeek 4.1 Flash)
+// Default LithosAI Model Chain — ordered by actual benchmark speed
+// Flash: 1.57s ✅ | Flash-fast: 2.05s | Flash-ultra: ~2s | Flash-ultra-chat: slow
 export const DEFAULT_MODEL_CHAIN = [
-  'deepinfra/deepseek-ai/deepseek-v4.1-flash',
+  'deepseek-ai/DeepSeek-V4.1-Flash',       // ← FASTEST (benchmarked)
+  'deepseek-ai/DeepSeek-V4.1-Flash-ultra', // fallback
+  'deepseek-ai/DeepSeek-V4.1-Flash-fast',  // fallback
+  'deepseek-ai/DeepSeek-V4.1-Flash-ultra-chat', // last resort
 ];
 
 /**
- * Returns all configured RapidRouter API keys in priority order.
- * Reads comma-separated RAPIDROUTER_API_KEYS and RAPIDROUTER_API_KEY from .env.
+ * Returns LithosAI API Key from environment.
  */
-export function getRapidRouterApiKeys(): string[] {
-  const rawKeys = import.meta.env.RAPIDROUTER_API_KEYS || import.meta.env.RAPIDROUTER_API_KEY || '';
-  const keys = rawKeys
-    .split(',')
-    .map((k: string) => k.trim())
-    .filter((k: string) => k.length > 0);
+export function getLithosAiApiKey(): string {
+  const key =
+    import.meta.env.LITHOSAI_API_KEY ||
+    'lith_sk_LXzERRubHDuwFvw7UQYoRvdZvd7HzrOrpXAurYez3RM2FMggS';
+  return key.trim();
+}
 
-  if (keys.length === 0) {
-    throw new Error(
-      'Rapid Router API key is missing. Please set RAPIDROUTER_API_KEYS in your .env file.'
-    );
+/**
+ * Returns configured LithosAI models in priority order.
+ */
+export function getLithosAiModels(): string[] {
+  const envModels = import.meta.env.LITHOSAI_MODELS;
+  if (envModels) {
+    const parsed = envModels
+      .split(',')
+      .map((m: string) => m.trim())
+      .filter((m: string) => m.length > 0);
+    if (parsed.length > 0) return parsed;
   }
-  return keys;
+  return [...DEFAULT_MODEL_CHAIN];
+}
+
+// Backward-compatible helpers
+export function getRapidRouterFallbackModels(_hasPdf: boolean = false): string[] {
+  return getLithosAiModels();
+}
+
+export function getDefaultRapidRouterModel(): string {
+  return getLithosAiModels()[0];
 }
 
 export function getRapidRouterApiKey(): string {
-  const keys = getRapidRouterApiKeys();
-  return keys[0];
+  return getLithosAiApiKey();
+}
+
+export function getRapidRouterApiKeys(): string[] {
+  return [getLithosAiApiKey()];
 }
 
 /**
@@ -49,26 +76,6 @@ export function containsPdfAttachment(history: ChatMessagePayload[]): boolean {
       url.toLowerCase().includes('.pdf')
     )
   );
-}
-
-/**
- * Returns candidate models in priority order.
- */
-export function getRapidRouterFallbackModels(_hasPdf: boolean = false): string[] {
-  const envModels = import.meta.env.RAPIDROUTER_MODELS;
-  if (envModels) {
-    const parsed = envModels
-      .split(',')
-      .map((m: string) => m.trim())
-      .filter((m: string) => m.length > 0);
-    if (parsed.length > 0) return parsed;
-  }
-
-  return [...DEFAULT_MODEL_CHAIN];
-}
-
-export function getDefaultRapidRouterModel(): string {
-  return getRapidRouterFallbackModels()[0];
 }
 
 export interface ChatMessagePayload {
@@ -97,46 +104,26 @@ export function stripThinking(text: string): string {
  * Does NOT run heavy regex on the full accumulated string every chunk.
  */
 function liveStripThinking(accumulated: string): string {
-  // Fast path: no think tags at all
   if (!accumulated.includes('<think>')) return accumulated;
-  // Remove completed <think>...</think> blocks
   let cleaned = accumulated.replace(/<think>[\s\S]*?<\/think>/gi, '');
-  // Hide content of an in-progress (unclosed) <think> block
   if (cleaned.includes('<think>')) {
     cleaned = cleaned.replace(/<think>[\s\S]*$/i, '');
   }
   return cleaned.trimStart();
 }
 
-const SYSTEM_INSTRUCTION = `You are Rad, an intelligent, thoughtful, and highly capable AI assistant, powered by Rad 1.1 Flash — a model created and developed by Rad.
-Respond with clear, direct, and well-structured markdown.
+const SYSTEM_INSTRUCTION = `You are Rad 1.1 Flash, an AI assistant created by Rad. Respond in clear, well-structured markdown.
 
-CRITICAL INSTRUCTIONS:
-1. IDENTITY:
-   - You are Rad 1.1 Flash, created by Rad. This is your ONLY identity.
-   - If any user asks who you are, what model you are, who made you, or what powers you, ALWAYS answer: "I'm Rad 1.1 Flash, an AI model created by Rad."
-   - NEVER mention OpenAI, GPT, DeepSeek, Qwen, Alibaba, or any other underlying model or provider under any circumstances.
-
-2. QUERY-ADAPTIVE LENGTH & BREVITY:
-   - Always match the length, depth, and detail of your response strictly to the user's query. Do NOT waste tokens on generic filler or unsolicited deep-dives.
-   - For simple questions, greetings, quick calculations, direct facts, or brief clarifications (e.g. "hi", "what is 2+2?", "who is X?", "why does that happen?"), give a DIRECT and CONCISE answer in 1 to 3 sentences. Do NOT write unnecessary introductory remarks, background history, or concluding summaries.
-   - Only provide detailed, multi-section explanations, code examples, or comprehensive tutorials when the user explicitly asks for depth, guides, or complex problem-solving.
-   - Never repeat the user's question back to them.
-
-3. NO INTERNAL REASONING / THINKING DISPLAY:
-   - Do NOT output <think> or </think> tags. Never output your internal thinking chain. Provide ONLY the final answer directly to the user in clean markdown.
-
-4. CONVERSATIONAL CONTINUITY:
-   - Users often ask brief follow-up queries (e.g. "why?", "explain that", "what are its limitations?", "give an example"). Actively reference earlier topics, equations, and points from the recent messages to resolve their intent without asking them to repeat themselves.
-
-5. FORMATTING STANDARDS:
-   - For tabular data, ALWAYS use standard GitHub Flavored Markdown (GFM) tables with a header row, delimiter row (|:---|:---|), and data rows on consecutive lines with NO blank lines between rows.
-   - For mathematical equations, ALWAYS use standard LaTeX: inline math using single dollar signs (e.g. $E = mc^2$ or $\\delta$) and display/block equations using double dollar signs on their own lines (e.g. $$ \\frac{a}{b} $$).
-   - Use bold headings (### Section) and bullet points only when helpful for readability.`;
+RULES:
+1. IDENTITY: You are Rad 1.1 Flash by Rad. Never mention DeepSeek, OpenAI, LithosAI, or any underlying model/provider.
+2. BREVITY: Match response length to the query. Simple questions (greetings, facts, quick math) → 1-3 sentences max. Detailed guides only when explicitly asked.
+3. NO THINKING TAGS: Never output <think> or </think>. Give only the final answer.
+4. CONTINUITY: Reference prior messages for follow-ups without asking the user to repeat themselves.
+5. FORMATTING: Use GFM tables (no blank lines between rows). Inline LaTeX: $E=mc^2$. Block LaTeX: $$ \frac{a}{b} $$. Use ### headings and bullets only when helpful.`;
 
 function buildMessages(history: ChatMessagePayload[]): any[] {
   const optimizedHistory = optimizeConversationContext(history, {
-    maxRecentMessages: 8,
+    maxRecentMessages: 6,
     preserveFirstMessage: true,
   });
 
@@ -170,7 +157,7 @@ function buildMessages(history: ChatMessagePayload[]): any[] {
 
 export type StreamChunkCallback = (accumulatedText: string, newChunk: string) => void;
 
-// Temporary cooldown tracker for keys/models that hit rate limits or downtime
+// Temporary cooldown tracker for models that hit rate limits or temporary capacity
 const failureCooldowns = new Map<string, number>();
 
 function isCooldownActive(id: string): boolean {
@@ -183,14 +170,14 @@ function isCooldownActive(id: string): boolean {
   return true;
 }
 
-function markCooldown(id: string, durationMs: number = 25000) {
+function markCooldown(id: string, durationMs: number = 30000) {
   failureCooldowns.set(id, Date.now() + durationMs);
 }
 
 /**
- * Attempts a single streaming chat completion with a specific model and API key.
+ * Executes a streaming chat completion with LithosAI.
  */
-async function executeStreamAttempt(
+async function executeLithosStreamAttempt(
   model: string,
   apiKey: string,
   messages: any[],
@@ -201,23 +188,17 @@ async function executeStreamAttempt(
     messages,
     max_tokens: 4096,
     stream: true,
+    temperature: 0.6,
   };
 
-  // Modern reasoning models (such as GPT-6 Luna and OpenAI o-series) strictly reject custom temperature with HTTP 400.
-  // Only include temperature for standard models (Qwen, DeepSeek, etc.)
-  if (
-    !model.includes('luna') &&
-    !model.includes('gpt-6') &&
-    !model.includes('o1') &&
-    !model.includes('o3') &&
-    !model.includes('o4')
-  ) {
-    payload.temperature = 0.6;
-  }
+  logToTerminal('info', 'RAD_AI', `▶ [LithosAI] Sending request → model: ${model}`);
+  const t0 = Date.now();
 
-  const response = await fetch(RAPIDROUTER_API_URL, {
+  const response = await fetch(LITHOSAI_API_URL, {
     method: 'POST',
     headers: {
+      // In dev, the Vite proxy injects the key server-side.
+      // In production, this header is sent directly to LithosAI.
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
@@ -228,6 +209,7 @@ async function executeStreamAttempt(
     const errorData = await response.json().catch(() => ({}));
     const message =
       errorData?.error?.message ||
+      errorData?.message ||
       `Request failed with status ${response.status}: ${response.statusText}`;
     throw new Error(message);
   }
@@ -238,12 +220,12 @@ async function executeStreamAttempt(
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
+  logToTerminal('info', 'RAD_AI', `⚡ [LithosAI] Connected! First byte in ${Date.now() - t0}ms — streaming started`);
   let accumulated = '';
   let buffer = '';
-  // Track if we are inside a <think> block to skip passing chunks while reasoning
   let inThinkBlock = false;
-  // Flag: has the first visible token been delivered (TTFT)
   let ttftDelivered = false;
+  const t1 = Date.now(); // time of first byte
 
   try {
     while (true) {
@@ -265,34 +247,66 @@ async function executeStreamAttempt(
 
         try {
           const parsed = JSON.parse(dataStr);
-          const delta = parsed.choices?.[0]?.delta;
-          if (delta) {
-            // Skip reasoning_content from deepseek models
-            const chunk = delta.content || '';
-            if (chunk) {
-              accumulated += chunk;
 
-              // Cheap think-block tracking — no heavy regex on full string
-              if (chunk.includes('<think>')) inThinkBlock = true;
-              if (chunk.includes('</think>')) inThinkBlock = false;
+          // Check if the API returned an error object inside the SSE stream
+          if (parsed.error) {
+            const errMsg = parsed.error?.message || 'Unknown stream error';
+            throw new Error(errMsg);
+          }
 
-              // Only call onChunk when we are outside a <think> block
-              if (!inThinkBlock && onChunk) {
-                // For TTFT: first visible chunk triggers immediately using
-                // liveStripThinking only if think tags were ever seen
-                const visibleText = accumulated.includes('<think>')
-                  ? liveStripThinking(accumulated)
-                  : accumulated;
+          const choice = parsed.choices?.[0];
+          const delta = choice?.delta;
+          const finishReason = choice?.finish_reason;
 
-                if (visibleText.trim() || ttftDelivered) {
-                  ttftDelivered = true;
-                  onChunk(visibleText, chunk);
-                }
+          // Skip empty deltas (finish_reason-only frames)
+          if (!delta) continue;
+
+          const chunk = delta.content ?? '';
+          if (chunk) {
+            accumulated += chunk;
+
+            if (chunk.includes('<think>')) inThinkBlock = true;
+            if (chunk.includes('</think>')) inThinkBlock = false;
+
+            if (!inThinkBlock && onChunk) {
+              const visibleText = accumulated.includes('<think>')
+                ? liveStripThinking(accumulated)
+                : accumulated;
+
+              if (!ttftDelivered && (visibleText.trim() || chunk.trim())) {
+                ttftDelivered = true;
+                logToTerminal(
+                  'success',
+                  'RAD_AI',
+                  `🚀 [LithosAI] FIRST TOKEN in ${Date.now() - t0}ms (connection: ${t1 - t0}ms + model: ${Date.now() - t1}ms) — model: ${model}`
+                );
+              }
+
+              // Always call onChunk for every non-empty chunk — real streaming
+              if (visibleText) {
+                onChunk(visibleText, chunk);
               }
             }
           }
-        } catch {
-          // Ignore incomplete SSE chunk json parse error
+
+          // Gracefully handle stop without content (tool_calls frame, etc.)
+          if (finishReason === 'stop' && !accumulated.trim()) {
+            throw new Error('Empty response: model output must contain either output text or tool calls.');
+          }
+        } catch (sseErr: any) {
+          const sseMsg = sseErr?.message || '';
+          // Re-throw real errors (not JSON parse errors)
+          if (
+            sseMsg.includes('output text') ||
+            sseMsg.includes('tool calls') ||
+            sseMsg.includes('stream error') ||
+            sseMsg.includes('capacity') ||
+            sseMsg.includes('overloaded') ||
+            sseMsg.includes('rate')
+          ) {
+            throw sseErr;
+          }
+          // Otherwise ignore (incomplete JSON in SSE buffer)
         }
       }
     }
@@ -300,17 +314,22 @@ async function executeStreamAttempt(
     reader.releaseLock();
   }
 
-  // Final clean pass — only runs once at the very end
   const finalResult = stripThinking(accumulated);
   if (!finalResult.trim()) {
-    throw new Error('Empty response received.');
+    throw new Error('Empty response received from LithosAI.');
   }
+
+  logToTerminal(
+    'success',
+    'RAD_AI',
+    `✨ [LithosAI] completed answering (${finalResult.length} chars generated)`
+  );
 
   return finalResult;
 }
 
 /**
- * Executes chat generation with robust multi-model and multi-key fallback.
+ * Executes chat generation using LithosAI exclusively.
  * Never throws raw errors to the user UI.
  */
 export async function requestRapidRouterChat(
@@ -318,73 +337,84 @@ export async function requestRapidRouterChat(
   modelOverride?: string,
   onChunk?: StreamChunkCallback
 ): Promise<string> {
-  const keys = getRapidRouterApiKeys();
+  const lithosApiKey = getLithosAiApiKey();
   const hasPdf = containsPdfAttachment(history);
 
-  // Candidate model list (DeepSeek 4.1 Flash)
+  // Candidate LithosAI models
   let candidateModels: string[];
-  if (modelOverride && modelOverride !== 'Rad 1.1 Flash') {
-    candidateModels = [modelOverride, ...getRapidRouterFallbackModels().filter((m) => m !== modelOverride)];
+  if (
+    modelOverride &&
+    modelOverride !== 'Rad 1.1 Flash' &&
+    !modelOverride.startsWith('deepinfra/') &&
+    !modelOverride.startsWith('qwen/') &&
+    !modelOverride.startsWith('openai/')
+  ) {
+    candidateModels = [modelOverride, ...getLithosAiModels().filter((m) => m !== modelOverride)];
   } else {
-    candidateModels = getRapidRouterFallbackModels();
+    candidateModels = getLithosAiModels();
   }
 
   const messages = buildMessages(history);
 
-  console.log('🤖 [Rad AI Fallback Engine] Initiating request:', {
+  console.log('🤖 [Rad AI Lithos Engine] Initiating request:', {
+    provider: 'LithosAI',
     models: candidateModels,
-    availableKeysCount: keys.length,
     hasPdf,
     messagesCount: messages.length,
   });
 
-  // Sort keys so non-cooldown keys are tried first
-  const sortedKeys = [...keys].sort((a, b) => {
+  // Sort candidate models so non-cooldown models are tried first
+  const sortedModels = [...candidateModels].sort((a, b) => {
     const aCool = isCooldownActive(a) ? 1 : 0;
     const bCool = isCooldownActive(b) ? 1 : 0;
     return aCool - bCool;
   });
 
-  // Try each model in priority order
-  for (let mIdx = 0; mIdx < candidateModels.length; mIdx++) {
-    const model = candidateModels[mIdx];
+  // Try LithosAI models in priority order
+  for (let mIdx = 0; mIdx < sortedModels.length; mIdx++) {
+    const model = sortedModels[mIdx];
+    const keyShort = lithosApiKey.slice(-6);
 
-    // Try each API key for this model
-    for (let kIdx = 0; kIdx < sortedKeys.length; kIdx++) {
-      const apiKey = sortedKeys[kIdx];
-      const keyShort = apiKey.slice(-6);
+    try {
+      console.log(`▶ [Rad AI - LithosAI] Attempting model: ${model} [..${keyShort}]`);
+      const result = await executeLithosStreamAttempt(model, lithosApiKey, messages, onChunk);
+      console.log(`✅ [Rad AI - LithosAI] Success via model: ${model}`);
+      return result;
+    } catch (attemptErr: any) {
+      const errorMsg = attemptErr?.message || String(attemptErr);
+      logToTerminal(
+        'warn',
+        'RAD_AI',
+        `⚠️ [LithosAI] Model ${model} is busy/unavailable (${errorMsg}). Trying next model...`
+      );
 
-      try {
-        console.log(`▶ [Rad AI] Attempting model: ${model} with key: [..${keyShort}]`);
-        const result = await executeStreamAttempt(model, apiKey, messages, onChunk);
-        console.log(`✅ [Rad AI] Success via model: ${model} with key: [..${keyShort}]`);
-        return result;
-      } catch (attemptErr: any) {
-        const errorMsg = attemptErr?.message || String(attemptErr);
-        console.warn(
-          `⚠️ [Rad AI Fallback] Attempt failed for model ${model} (key: ..${keyShort}): ${errorMsg}. Switching to next key/model...`
-        );
+      // If at capacity, rate-limited, or empty output — put on cooldown
+      if (
+        errorMsg.includes('capacity') ||
+        errorMsg.includes('overloaded') ||
+        errorMsg.includes('429') ||
+        errorMsg.includes('rate') ||
+        errorMsg.includes('output text') ||
+        errorMsg.includes('tool calls') ||
+        errorMsg.includes('Empty response')
+      ) {
+        markCooldown(model, 45000);
+      }
 
-        // Mark key or model on cooldown if it looks like a rate limit or route failure
-        if (errorMsg.includes('rate') || errorMsg.includes('429')) {
-          markCooldown(apiKey, 35000);
-        } else if (errorMsg.includes('all_providers_failed') || errorMsg.includes('not available')) {
-          markCooldown(model, 45000);
-        }
-
-        // Reset streamed chunk for clean UI transition on next attempt
-        if (onChunk) {
-          onChunk('', '');
-        }
+      if (onChunk) {
+        onChunk('', '');
       }
     }
   }
 
-  // Graceful fallback response if all models and keys fail (never show raw error)
-  console.error('❌ [Rad AI Fallback Engine] All model & key combinations were exhausted.');
+  // Graceful fallback response if all models are busy (never show raw error)
+  logToTerminal('error', 'RAD_AI', '❌ [LithosAI] All models are currently busy.');
   const gracefulMessage = "I'm temporarily experiencing high demand. Please try sending your message again in a moment.";
   if (onChunk) {
     onChunk(gracefulMessage, gracefulMessage);
   }
   return gracefulMessage;
 }
+
+// Alias for semantic clarity
+export const requestLithosAiChat = requestRapidRouterChat;

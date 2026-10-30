@@ -9,8 +9,9 @@ interface ImportMetaEnv {
   readonly FIREBASE_APP_ID: string;
   readonly FIREBASE_MEASUREMENT_ID: string;
   readonly FIREBASE_DATABASE_ID?: string;
-  readonly RAPIDROUTER_API_KEY: string;
-  readonly RAPIDROUTER_MODEL?: string;
+  readonly LITHOSAI_API_KEY?: string;
+  readonly LITHOSAI_BASE_URL?: string;
+  readonly LITHOSAI_MODELS?: string;
 }
 
 interface ImportMeta {

@@ -48,7 +48,7 @@ export default function App() {
   });
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
+  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
   const [showContactUs, setShowContactUs] = useState(false);
   const [activeView, setActiveView] = useState<'dashboard' | 'notebooks' | 'shared' | 'artifacts'>('dashboard');
   const [chats, setChats] = useState<ChatSession[]>([]);
