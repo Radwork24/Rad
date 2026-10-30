@@ -8,11 +8,10 @@
 import { optimizeConversationContext } from '../utils/contextManager';
 import { logToTerminal } from '../utils/terminalLogger';
 
-// LithosAI Endpoint — use local Vite proxy in dev to bypass CORS
-const LITHOSAI_API_URL =
-  typeof window !== 'undefined' && window.location.hostname === 'localhost'
-    ? '/api/lithos/chat'
-    : 'https://api.lithosai.cloud/v1/chat/completions';
+// LithosAI Endpoint — always goes through our proxy to bypass CORS
+// Dev: Vite middleware (vite.config.ts)
+// Prod: Vercel Edge Function (api/lithos/chat.js)
+const LITHOSAI_API_URL = '/api/lithos/chat';
 
 // Default LithosAI Model Chain — ordered by actual benchmark speed
 // Flash: 1.57s ✅ | Flash-fast: 2.05s | Flash-ultra: ~2s | Flash-ultra-chat: slow
