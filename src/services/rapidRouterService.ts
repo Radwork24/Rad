@@ -1,40 +1,51 @@
 /**
- * Rad AI Service (Powered Exclusively by LithosAI)
- * Endpoint: https://api.lithosai.cloud/v1
- * Primary Model: deepseek-ai/DeepSeek-V4.1-Flash-ultra-chat
- * Features: Native streaming, ultra-low latency, vision, and document analysis.
+ * Rad AI Service (Powered by Tri-Engine Speculative Racing)
+ * Engines:
+ *   1. Groq (LPU Ultra-Fast Engine) → ~250-350ms TTFT
+ *   2. Cerebras (Wafer-Scale Engine) → ~350-500ms TTFT
+ *   3. LithosAI (DeepSeek/GLM Engine) → Multimodal & Fallback
+ * Features: Sub-second first-token race, real-time SSE streaming, zero-downtime hedging.
  */
 
 import { optimizeConversationContext } from '../utils/contextManager';
 import { logToTerminal } from '../utils/terminalLogger';
 
-// LithosAI Endpoint — always goes through our proxy to bypass CORS
-// Dev: Vite middleware (vite.config.ts)
-// Prod: Vercel Edge Function (api/lithos/chat.js)
+// Proxied Endpoints — routed through local Vite proxy or Vercel Edge functions to bypass CORS
 const LITHOSAI_API_URL = '/api/lithos/chat';
+const GROQ_API_URL = '/api/groq/chat';
+const CEREBRAS_API_URL = '/api/cerebras/chat';
 
-// Default LithosAI Model Chain — ordered by actual benchmark speed
-// Flash: 1.57s ✅ | Flash-fast: 2.05s | Flash-ultra: ~2s | Flash-ultra-chat: slow
+// Default LithosAI Model Chain
 export const DEFAULT_MODEL_CHAIN = [
-  'deepseek-ai/DeepSeek-V4.1-Flash',       // ← FASTEST (benchmarked)
-  'deepseek-ai/DeepSeek-V4.1-Flash-ultra', // fallback
-  'deepseek-ai/DeepSeek-V4.1-Flash-fast',  // fallback
-  'deepseek-ai/DeepSeek-V4.1-Flash-ultra-chat', // last resort
+  'deepseek-ai/DeepSeek-V4.1-Flash-fast',
+  'deepseek-ai/DeepSeek-V4.1-Flash',
+  'deepseek-ai/DeepSeek-V4.1-Flash-ultra',
+  'zai-org/GLM-5.3-Flash-ultra',
 ];
 
 /**
- * Returns LithosAI API Key from environment.
+ * Returns API keys from environment
  */
 export function getLithosAiApiKey(): string {
-  const key =
-    import.meta.env.LITHOSAI_API_KEY ||
-    'lith_sk_LXzERRubHDuwFvw7UQYoRvdZvd7HzrOrpXAurYez3RM2FMggS';
-  return key.trim();
+  return (import.meta.env.LITHOSAI_API_KEY || '').trim();
 }
 
-/**
- * Returns configured LithosAI models in priority order.
- */
+export function getGroqApiKey(): string {
+  return (import.meta.env.GROQ_API_KEY || '').trim();
+}
+
+export function getCerebrasApiKey(): string {
+  return (import.meta.env.CEREBRAS_API_KEY || '').trim();
+}
+
+export function getGroqModel(): string {
+  return import.meta.env.GROQ_MODEL || 'qwen/qwen3.8-27b';
+}
+
+export function getCerebrasModel(): string {
+  return import.meta.env.CEREBRAS_MODEL || 'qwen-3.8-27b';
+}
+
 export function getLithosAiModels(): string[] {
   const envModels = import.meta.env.LITHOSAI_MODELS;
   if (envModels) {
@@ -53,7 +64,7 @@ export function getRapidRouterFallbackModels(_hasPdf: boolean = false): string[]
 }
 
 export function getDefaultRapidRouterModel(): string {
-  return getLithosAiModels()[0];
+  return 'Rad 1.1 Flash (Tri-Engine)';
 }
 
 export function getRapidRouterApiKey(): string {
@@ -61,7 +72,7 @@ export function getRapidRouterApiKey(): string {
 }
 
 export function getRapidRouterApiKeys(): string[] {
-  return [getLithosAiApiKey()];
+  return [getLithosAiApiKey(), getGroqApiKey(), getCerebrasApiKey()];
 }
 
 /**
@@ -85,7 +96,6 @@ export interface ChatMessagePayload {
 
 /**
  * Strips <think>...</think> reasoning blocks from text.
- * Handles both complete blocks and unclosed blocks during real-time streaming.
  */
 export function stripThinking(text: string): string {
   if (!text) return '';
@@ -99,8 +109,7 @@ export function stripThinking(text: string): string {
 
 /**
  * Lightweight version of stripThinking for real-time streaming:
- * Only suppresses content while inside an open <think> block.
- * Does NOT run heavy regex on the full accumulated string every chunk.
+ * Suppresses content while inside an open <think> block.
  */
 function liveStripThinking(accumulated: string): string {
   if (!accumulated.includes('<think>')) return accumulated;
@@ -111,14 +120,14 @@ function liveStripThinking(accumulated: string): string {
   return cleaned.trimStart();
 }
 
-const SYSTEM_INSTRUCTION = `You are Rad 1.1 Flash, an AI assistant created by Rad. Respond in clear, well-structured markdown.
+const SYSTEM_INSTRUCTION = `You are Rad 1.1 Flash, an AI assistant created by Rad. Respond in clear, beautifully structured markdown.
 
 RULES:
-1. IDENTITY: You are Rad 1.1 Flash by Rad. Never mention DeepSeek, OpenAI, LithosAI, or any underlying model/provider.
+1. IDENTITY: You are Rad 1.1 Flash by Rad. Never mention DeepSeek, Groq, Cerebras, OpenAI, LithosAI, or any underlying model/provider.
 2. BREVITY: Match response length to the query. Simple questions (greetings, facts, quick math) → 1-3 sentences max. Detailed guides only when explicitly asked.
 3. NO THINKING TAGS: Never output <think> or </think>. Give only the final answer.
 4. CONTINUITY: Reference prior messages for follow-ups without asking the user to repeat themselves.
-5. FORMATTING: Use GFM tables (no blank lines between rows). Inline LaTeX: $E=mc^2$. Block LaTeX: $$ \frac{a}{b} $$. Use ### headings and bullets only when helpful.`;
+5. FORMATTING: Use clean GitHub Flavored Markdown (GFM). Use bold highlights, code blocks with language tags, and lists. Inline LaTeX: $E=mc^2$. Block LaTeX: $$ \\frac{a}{b} $$.`;
 
 function buildMessages(history: ChatMessagePayload[]): any[] {
   const optimizedHistory = optimizeConversationContext(history, {
@@ -156,7 +165,7 @@ function buildMessages(history: ChatMessagePayload[]): any[] {
 
 export type StreamChunkCallback = (accumulatedText: string, newChunk: string) => void;
 
-// Temporary cooldown tracker for models that hit rate limits or temporary capacity
+// Temporary cooldown tracker
 const failureCooldowns = new Map<string, number>();
 
 function isCooldownActive(id: string): boolean {
@@ -173,8 +182,198 @@ function markCooldown(id: string, durationMs: number = 30000) {
   failureCooldowns.set(id, Date.now() + durationMs);
 }
 
+interface EngineDefinition {
+  id: 'groq' | 'cerebras' | 'lithos';
+  name: string;
+  url: string;
+  apiKey: string;
+  model: string;
+}
+
 /**
- * Executes a streaming chat completion with LithosAI.
+ * Speculative Tri-Engine Race:
+ * Fires requests to Groq, Cerebras, and LithosAI simultaneously.
+ * Whichever engine outputs the first non-empty text token WINS.
+ * The losing engines are immediately aborted to save quota & bandwidth.
+ */
+async function executeTriEngineRace(
+  messages: any[],
+  onChunk?: StreamChunkCallback
+): Promise<string> {
+  const t0 = Date.now();
+
+  const engines: EngineDefinition[] = [
+    {
+      id: 'groq',
+      name: 'Groq (LPU)',
+      url: GROQ_API_URL,
+      apiKey: getGroqApiKey(),
+      model: getGroqModel(),
+    },
+    {
+      id: 'cerebras',
+      name: 'Cerebras (WSE)',
+      url: CEREBRAS_API_URL,
+      apiKey: getCerebrasApiKey(),
+      model: getCerebrasModel(),
+    },
+    {
+      id: 'lithos',
+      name: 'LithosAI',
+      url: LITHOSAI_API_URL,
+      apiKey: getLithosAiApiKey(),
+      model: getLithosAiModels()[0],
+    },
+  ];
+
+  logToTerminal('info', 'RAD_AI', '🏁 [Tri-Engine Race] Racing Groq ⚡ Cerebras ⚡ LithosAI in parallel...');
+
+  const controllers = {
+    groq: new AbortController(),
+    cerebras: new AbortController(),
+    lithos: new AbortController(),
+  };
+
+  let winnerEngine: EngineDefinition | null = null;
+  let finalAccumulated = '';
+
+  const runEngine = async (engine: EngineDefinition): Promise<string> => {
+    const controller = controllers[engine.id];
+    let engineAccumulated = '';
+    let buffer = '';
+    let inThinkBlock = false;
+
+    const payload = {
+      model: engine.model,
+      messages,
+      max_tokens: 4096,
+      stream: true,
+      temperature: 0.6,
+    };
+
+    const res = await fetch(engine.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${engine.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`${engine.name} HTTP ${res.status}: ${errText.slice(0, 100)}`);
+    }
+
+    if (!res.body) throw new Error(`${engine.name} returned empty body`);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line || !line.startsWith('data:')) continue;
+          const dataStr = line.slice(5).trim();
+          if (dataStr === '[DONE]') break;
+
+          try {
+            const parsed = JSON.parse(dataStr);
+            if (parsed.error) throw new Error(parsed.error.message || 'Stream error');
+
+            const choice = parsed.choices?.[0];
+            const delta = choice?.delta;
+            if (!delta) continue;
+
+            const chunk = delta.content ?? '';
+            if (chunk) {
+              if (chunk.includes('<think>')) inThinkBlock = true;
+              if (chunk.includes('</think>')) inThinkBlock = false;
+
+              if (!inThinkBlock) {
+                // If no winner yet, this engine WINS the race!
+                if (!winnerEngine) {
+                  winnerEngine = engine;
+                  const elapsed = Date.now() - t0;
+                  logToTerminal(
+                    'success',
+                    'RAD_AI',
+                    `🏆 [Tri-Engine Race] WINNER: ${engine.name} in ${elapsed}ms! Streaming tokens...`
+                  );
+
+                  // Immediately abort the slower competitors
+                  for (const [id, ctrl] of Object.entries(controllers)) {
+                    if (id !== engine.id) {
+                      ctrl.abort();
+                    }
+                  }
+                }
+
+                // If this is the winning engine, pipe chunks to the UI
+                if (winnerEngine.id === engine.id) {
+                  engineAccumulated += chunk;
+                  const visible = engineAccumulated.includes('<think>')
+                    ? liveStripThinking(engineAccumulated)
+                    : engineAccumulated;
+                  if (visible && onChunk) {
+                    onChunk(visible, chunk);
+                  }
+                }
+              }
+            }
+          } catch (jsonErr: any) {
+            // Ignore incomplete SSE json fragments
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (winnerEngine?.id === engine.id) {
+      finalAccumulated = stripThinking(engineAccumulated);
+    }
+    return engineAccumulated;
+  };
+
+  // Run all 3 engines concurrently
+  const enginePromises = engines.map(async (eng) => {
+    try {
+      return await runEngine(eng);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        console.warn(`[Tri-Engine] ${eng.name} error:`, err?.message);
+      }
+      return null;
+    }
+  });
+
+  await Promise.allSettled(enginePromises);
+
+  if (finalAccumulated.trim()) {
+    const winnerName = (winnerEngine as EngineDefinition | null)?.name || 'Fastest Engine';
+    logToTerminal(
+      'success',
+      'RAD_AI',
+      `✨ [Tri-Engine] Complete via ${winnerName} in ${Date.now() - t0}ms (${finalAccumulated.length} chars)`
+    );
+    return finalAccumulated;
+  }
+
+  throw new Error('All raced engines failed or were aborted');
+}
+
+/**
+ * Fallback / Multimodal direct attempt with LithosAI.
  */
 async function executeLithosStreamAttempt(
   model: string,
@@ -196,8 +395,6 @@ async function executeLithosStreamAttempt(
   const response = await fetch(LITHOSAI_API_URL, {
     method: 'POST',
     headers: {
-      // In dev, the Vite proxy injects the key server-side.
-      // In production, this header is sent directly to LithosAI.
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
@@ -219,12 +416,10 @@ async function executeLithosStreamAttempt(
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
-  logToTerminal('info', 'RAD_AI', `⚡ [LithosAI] Connected! First byte in ${Date.now() - t0}ms — streaming started`);
   let accumulated = '';
   let buffer = '';
   let inThinkBlock = false;
   let ttftDelivered = false;
-  const t1 = Date.now(); // time of first byte
 
   try {
     while (true) {
@@ -239,31 +434,19 @@ async function executeLithosStreamAttempt(
         const line = rawLine.trim();
         if (!line || !line.startsWith('data:')) continue;
         const dataStr = line.slice(5).trim();
-
-        if (dataStr === '[DONE]') {
-          break;
-        }
+        if (dataStr === '[DONE]') break;
 
         try {
           const parsed = JSON.parse(dataStr);
-
-          // Check if the API returned an error object inside the SSE stream
-          if (parsed.error) {
-            const errMsg = parsed.error?.message || 'Unknown stream error';
-            throw new Error(errMsg);
-          }
+          if (parsed.error) throw new Error(parsed.error.message || 'Stream error');
 
           const choice = parsed.choices?.[0];
           const delta = choice?.delta;
-          const finishReason = choice?.finish_reason;
-
-          // Skip empty deltas (finish_reason-only frames)
           if (!delta) continue;
 
           const chunk = delta.content ?? '';
           if (chunk) {
             accumulated += chunk;
-
             if (chunk.includes('<think>')) inThinkBlock = true;
             if (chunk.includes('</think>')) inThinkBlock = false;
 
@@ -277,35 +460,17 @@ async function executeLithosStreamAttempt(
                 logToTerminal(
                   'success',
                   'RAD_AI',
-                  `🚀 [LithosAI] FIRST TOKEN in ${Date.now() - t0}ms (connection: ${t1 - t0}ms + model: ${Date.now() - t1}ms) — model: ${model}`
+                  `🚀 [LithosAI] FIRST TOKEN in ${Date.now() - t0}ms — model: ${model}`
                 );
               }
 
-              // Always call onChunk for every non-empty chunk — real streaming
               if (visibleText) {
                 onChunk(visibleText, chunk);
               }
             }
           }
-
-          // Gracefully handle stop without content (tool_calls frame, etc.)
-          if (finishReason === 'stop' && !accumulated.trim()) {
-            throw new Error('Empty response: model output must contain either output text or tool calls.');
-          }
         } catch (sseErr: any) {
-          const sseMsg = sseErr?.message || '';
-          // Re-throw real errors (not JSON parse errors)
-          if (
-            sseMsg.includes('output text') ||
-            sseMsg.includes('tool calls') ||
-            sseMsg.includes('stream error') ||
-            sseMsg.includes('capacity') ||
-            sseMsg.includes('overloaded') ||
-            sseMsg.includes('rate')
-          ) {
-            throw sseErr;
-          }
-          // Otherwise ignore (incomplete JSON in SSE buffer)
+          // Ignore incomplete chunk parse errors
         }
       }
     }
@@ -314,106 +479,61 @@ async function executeLithosStreamAttempt(
   }
 
   const finalResult = stripThinking(accumulated);
-  if (!finalResult.trim()) {
-    throw new Error('Empty response received from LithosAI.');
-  }
-
-  logToTerminal(
-    'success',
-    'RAD_AI',
-    `✨ [LithosAI] completed answering (${finalResult.length} chars generated)`
-  );
-
+  if (!finalResult.trim()) throw new Error('Empty response received from LithosAI.');
   return finalResult;
 }
 
 /**
- * Executes chat generation using LithosAI exclusively.
- * Never throws raw errors to the user UI.
+ * Executes chat generation using Tri-Engine Speculative Racing.
+ * Groq + Cerebras + LithosAI run simultaneously, fastest one wins.
  */
 export async function requestRapidRouterChat(
   history: ChatMessagePayload[],
-  modelOverride?: string,
+  _modelOverride?: string,
   onChunk?: StreamChunkCallback
 ): Promise<string> {
-  const lithosApiKey = getLithosAiApiKey();
-  const hasPdf = containsPdfAttachment(history);
-
-  // Candidate LithosAI models
-  let candidateModels: string[];
-  if (
-    modelOverride &&
-    modelOverride !== 'Rad 1.1 Flash' &&
-    !modelOverride.startsWith('deepinfra/') &&
-    !modelOverride.startsWith('qwen/') &&
-    !modelOverride.startsWith('openai/')
-  ) {
-    candidateModels = [modelOverride, ...getLithosAiModels().filter((m) => m !== modelOverride)];
-  } else {
-    candidateModels = getLithosAiModels();
-  }
-
+  const hasMedia = history.some(
+    (msg) => msg.images && msg.images.length > 0
+  );
   const messages = buildMessages(history);
 
-  console.log('🤖 [Rad AI Lithos Engine] Initiating request:', {
-    provider: 'LithosAI',
-    models: candidateModels,
-    hasPdf,
-    messagesCount: messages.length,
-  });
-
-  // Sort candidate models so non-cooldown models are tried first
-  const sortedModels = [...candidateModels].sort((a, b) => {
-    const aCool = isCooldownActive(a) ? 1 : 0;
-    const bCool = isCooldownActive(b) ? 1 : 0;
-    return aCool - bCool;
-  });
-
-  // Try LithosAI models in priority order
-  for (let mIdx = 0; mIdx < sortedModels.length; mIdx++) {
-    const model = sortedModels[mIdx];
-    const keyShort = lithosApiKey.slice(-6);
-
-    try {
-      console.log(`▶ [Rad AI - LithosAI] Attempting model: ${model} [..${keyShort}]`);
-      const result = await executeLithosStreamAttempt(model, lithosApiKey, messages, onChunk);
-      console.log(`✅ [Rad AI - LithosAI] Success via model: ${model}`);
-      return result;
-    } catch (attemptErr: any) {
-      const errorMsg = attemptErr?.message || String(attemptErr);
-      logToTerminal(
-        'warn',
-        'RAD_AI',
-        `⚠️ [LithosAI] Model ${model} is busy/unavailable (${errorMsg}). Trying next model...`
-      );
-
-      // If at capacity, rate-limited, or empty output — put on cooldown
-      if (
-        errorMsg.includes('capacity') ||
-        errorMsg.includes('overloaded') ||
-        errorMsg.includes('429') ||
-        errorMsg.includes('rate') ||
-        errorMsg.includes('output text') ||
-        errorMsg.includes('tool calls') ||
-        errorMsg.includes('Empty response')
-      ) {
-        markCooldown(model, 45000);
-      }
-
-      if (onChunk) {
-        onChunk('', '');
+  // If user attached images/PDFs, route directly to LithosAI (multimodal capability)
+  if (hasMedia) {
+    logToTerminal('info', 'RAD_AI', '📎 Media attachment detected — routing to LithosAI multimodal engine...');
+    const candidateModels = getLithosAiModels();
+    for (const model of candidateModels) {
+      try {
+        return await executeLithosStreamAttempt(model, getLithosAiApiKey(), messages, onChunk);
+      } catch (err: any) {
+        logToTerminal('warn', 'RAD_AI', `⚠️ LithosAI ${model} failed, trying next...`);
       }
     }
   }
 
-  // Graceful fallback response if all models are busy (never show raw error)
-  logToTerminal('error', 'RAD_AI', '❌ [LithosAI] All models are currently busy.');
-  const gracefulMessage = "I'm temporarily experiencing high demand. Please try sending your message again in a moment.";
-  if (onChunk) {
-    onChunk(gracefulMessage, gracefulMessage);
+  // 🏁 Default Text Flow: Tri-Engine Speculative Race!
+  try {
+    return await executeTriEngineRace(messages, onChunk);
+  } catch (raceErr) {
+    logToTerminal('warn', 'RAD_AI', '⚠️ Tri-Engine race had no clean winner, falling back to sequential chain...');
   }
+
+  // Fallback sequential execution if the race didn't succeed
+  const fallbackModels = getLithosAiModels();
+  for (const model of fallbackModels) {
+    if (isCooldownActive(model)) continue;
+    try {
+      const result = await executeLithosStreamAttempt(model, getLithosAiApiKey(), messages, onChunk);
+      return result;
+    } catch (attemptErr: any) {
+      markCooldown(model, 30000);
+    }
+  }
+
+  // Graceful failure message if everything failed
+  const gracefulMessage = "I'm temporarily experiencing high demand. Please try sending your message again in a moment.";
+  if (onChunk) onChunk(gracefulMessage, gracefulMessage);
   return gracefulMessage;
 }
 
-// Alias for semantic clarity
+// Alias for backwards compatibility
 export const requestLithosAiChat = requestRapidRouterChat;

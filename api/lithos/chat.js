@@ -8,7 +8,7 @@ export const config = {
 };
 
 const LITHOSAI_URL = 'https://api.lithosai.cloud/v1/chat/completions';
-const LITHOSAI_KEY = 'lith_sk_LXzERRubHDuwFvw7UQYoRvdZvd7HzrOrpXAurYez3RM2FMggS';
+const LITHOSAI_KEY = process.env.LITHOSAI_API_KEY || '';
 
 export default async function handler(req) {
   // Handle CORS preflight
