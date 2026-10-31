@@ -13,6 +13,10 @@
       "destination": "/api/lithos/chat"
     },
     {
+      "source": "/api/terminal-log",
+      "destination": "/api/terminal-log"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
