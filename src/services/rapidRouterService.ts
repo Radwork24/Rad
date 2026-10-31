@@ -243,12 +243,13 @@ async function executeTriEngineRace(
     let buffer = '';
     let inThinkBlock = false;
 
-    const payload = {
+    const payload: Record<string, any> = {
       model: engine.model,
       messages,
       max_tokens: 4096,
       stream: true,
       temperature: 0.6,
+      reasoning_effort: 'none', // Disables hidden thinking tokens across all engines for immediate visible text
     };
 
     const res = await fetch(engine.url, {
@@ -387,6 +388,7 @@ async function executeLithosStreamAttempt(
     max_tokens: 4096,
     stream: true,
     temperature: 0.6,
+    reasoning_effort: 'none',
   };
 
   logToTerminal('info', 'RAD_AI', `▶ [LithosAI] Sending request → model: ${model}`);
