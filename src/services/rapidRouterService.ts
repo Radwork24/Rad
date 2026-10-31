@@ -226,13 +226,17 @@ async function executeTriEngineRace(
     },
   ];
 
-  logToTerminal('info', 'RAD_AI', '🏁 [Tri-Engine Race] Racing Groq ⚡ Cerebras ⚡ LithosAI in parallel...');
+  // Filter out any engines currently on cooldown (e.g. if Groq free tier hits rate limits)
+  const activeEngines = engines.filter((e) => !isCooldownActive(e.id));
+  const racingEngines = activeEngines.length > 0 ? activeEngines : engines;
 
-  const controllers = {
-    groq: new AbortController(),
-    cerebras: new AbortController(),
-    lithos: new AbortController(),
-  };
+  const engineNames = racingEngines.map((e) => e.name).join(' ⚡ ');
+  logToTerminal('info', 'RAD_AI', `🏁 [Tri-Engine Race] Racing ${engineNames} in parallel...`);
+
+  const controllers: Record<string, AbortController> = {};
+  racingEngines.forEach((e) => {
+    controllers[e.id] = new AbortController();
+  });
 
   let winnerEngine: EngineDefinition | null = null;
   let finalAccumulated = '';
@@ -264,6 +268,19 @@ async function executeTriEngineRace(
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
+      if (
+        res.status === 429 ||
+        errText.toLowerCase().includes('rate') ||
+        errText.toLowerCase().includes('quota') ||
+        errText.toLowerCase().includes('limit')
+      ) {
+        markCooldown(engine.id, 60000); // 60s cooldown
+        logToTerminal(
+          'warn',
+          'RAD_AI',
+          `⚠️ [Tri-Engine] ${engine.name} hit rate limit. Put on 60s cooldown — Cerebras & Lithos take over seamlessly.`
+        );
+      }
       throw new Error(`${engine.name} HTTP ${res.status}: ${errText.slice(0, 100)}`);
     }
 
@@ -346,8 +363,8 @@ async function executeTriEngineRace(
     return engineAccumulated;
   };
 
-  // Run all 3 engines concurrently
-  const enginePromises = engines.map(async (eng) => {
+  // Run active racing engines concurrently
+  const enginePromises = racingEngines.map(async (eng) => {
     try {
       return await runEngine(eng);
     } catch (err: any) {
