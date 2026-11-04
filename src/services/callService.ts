@@ -18,6 +18,7 @@ export interface ActiveCallState {
   isIncoming: boolean;
   status: 'ringing' | 'connected' | 'ended' | 'declined';
   startTime?: number;
+  isVideo?: boolean;
 }
 
 export type CallListener = (call: ActiveCallState | null) => void;
@@ -516,6 +517,7 @@ export function subscribeToIncomingCalls(
           receiver: data.receiverDisplay || data.receiver,
           isIncoming: true,
           status: 'ringing',
+          isVideo: Boolean(data.isVideo || (data.callId && data.callId.startsWith('vcall_'))),
         });
       });
     },
@@ -524,3 +526,379 @@ export function subscribeToIncomingCalls(
     }
   );
 }
+
+
+// ============================================================
+// VIDEO CALL EXTENSIONS
+// ============================================================
+
+let currentVideoStream: MediaStream | null = null;
+let currentRemoteStream: MediaStream | null = null;
+let remoteVideoElement: HTMLVideoElement | null = null;
+let localVideoElement: HTMLVideoElement | null = null;
+const streamSubscribers = new Set<(local: MediaStream | null, remote: MediaStream | null) => void>();
+
+function notifyStreamSubscribers(): void {
+  streamSubscribers.forEach((fn) => {
+    try {
+      fn(currentVideoStream, currentRemoteStream);
+    } catch (e) {
+      console.warn('Stream subscriber error:', e);
+    }
+  });
+}
+
+/**
+ * Subscribes to live local and remote MediaStreams for video calls.
+ * Fires immediately with the current state.
+ */
+export function subscribeToVideoStreams(
+  listener: (local: MediaStream | null, remote: MediaStream | null) => void
+): () => void {
+  streamSubscribers.add(listener);
+  try {
+    listener(currentVideoStream, currentRemoteStream);
+  } catch {}
+  return () => {
+    streamSubscribers.delete(listener);
+  };
+}
+
+/**
+ * Attaches the current active local/remote streams to provided DOM <video> elements.
+ */
+export function attachVideoElements(
+  localEl?: HTMLVideoElement | null,
+  remoteEl?: HTMLVideoElement | null
+): void {
+  if (localEl !== undefined) {
+    localVideoElement = localEl;
+    if (localEl && currentVideoStream) {
+      localEl.srcObject = currentVideoStream;
+      localEl.muted = true;
+      localEl.play().catch(() => {});
+    }
+  }
+  if (remoteEl !== undefined) {
+    remoteVideoElement = remoteEl;
+    if (remoteEl && currentRemoteStream) {
+      remoteEl.srcObject = currentRemoteStream;
+      remoteEl.play().catch(() => {});
+    }
+  }
+}
+
+/**
+ * Exposes the current local camera/mic stream so React components
+ * can attach it to a <video> element for self-preview.
+ */
+export function getLocalVideoStream(): MediaStream | null {
+  return currentVideoStream;
+}
+
+export function getRemoteVideoStream(): MediaStream | null {
+  return currentRemoteStream;
+}
+
+/**
+ * Toggles the local camera on/off during a connected video call.
+ */
+export function toggleLocalVideo(isCameraOff: boolean): void {
+  if (currentVideoStream) {
+    currentVideoStream.getVideoTracks().forEach((track) => {
+      track.enabled = !isCameraOff;
+    });
+  }
+  // Also toggle for audio-only stream used in voice paths
+  if (currentLocalStream) {
+    currentLocalStream.getVideoTracks().forEach((track) => {
+      track.enabled = !isCameraOff;
+    });
+  }
+}
+
+/**
+ * Initiates an outgoing WebRTC VIDEO + audio call.
+ */
+export async function startVideoCall(
+  callerUsername: string,
+  receiverUsername: string,
+  onStateChange: CallListener,
+  localVideoEl?: HTMLVideoElement | null,
+  remoteVideoEl?: HTMLVideoElement | null
+): Promise<string> {
+  // Clean up stale calls
+  await endVoiceCall();
+
+  // Capture camera + mic
+  let localStream: MediaStream;
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+    });
+  } catch (err) {
+    console.error('Failed to access camera/mic:', err);
+    throw new Error('Camera and microphone permission required for a video call.');
+  }
+
+  currentVideoStream = localStream;
+  currentLocalStream = localStream;
+
+  if (localVideoEl) {
+    localVideoElement = localVideoEl;
+    localVideoEl.srcObject = localStream;
+    localVideoEl.muted = true;
+    localVideoEl.play().catch(() => {});
+  }
+  if (remoteVideoEl) {
+    remoteVideoElement = remoteVideoEl;
+  }
+  notifyStreamSubscribers();
+
+  const peerConnection = new RTCPeerConnection(ICE_SERVERS);
+  currentPeerConnection = peerConnection;
+
+  localStream.getTracks().forEach((track) => {
+    peerConnection.addTrack(track, localStream);
+  });
+
+  // Play remote video when stream arrives
+  peerConnection.ontrack = (event) => {
+    const [remoteStream] = event.streams;
+    currentRemoteStream = remoteStream;
+    notifyStreamSubscribers();
+    if (remoteVideoElement) {
+      remoteVideoElement.srcObject = remoteStream;
+      remoteVideoElement.play().catch(() => {});
+    }
+    // Also feed audio to hidden audio element
+    const audioEl = getRemoteAudioElement();
+    audioEl.srcObject = remoteStream;
+    audioEl.play().catch(() => {});
+  };
+
+  const safeCaller = callerUsername.toLowerCase().trim();
+  const safeReceiver = receiverUsername.toLowerCase().trim();
+  const callId = `vcall_${safeCaller}_${safeReceiver}_${Date.now()}`;
+  activeCallId = callId;
+
+  const callDocRef = doc(db, 'calls', callId);
+  const callerCandidatesCol = collection(callDocRef, 'callerCandidates');
+  const receiverCandidatesCol = collection(callDocRef, 'receiverCandidates');
+
+  peerConnection.onicecandidate = (event) => {
+    if (event.candidate) {
+      addDoc(callerCandidatesCol, event.candidate.toJSON()).catch(() => {});
+    }
+  };
+
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offer);
+
+  await setDoc(callDocRef, {
+    callId,
+    caller: safeCaller,
+    receiver: safeReceiver,
+    callerDisplay: callerUsername,
+    receiverDisplay: receiverUsername,
+    status: 'ringing',
+    isVideo: true,
+    offer: { type: offer.type, sdp: offer.sdp },
+    createdAt: Date.now(),
+  });
+
+  playOutgoingTone();
+
+  onStateChange({
+    callId,
+    caller: callerUsername,
+    receiver: receiverUsername,
+    isIncoming: false,
+    status: 'ringing',
+    isVideo: true,
+  });
+
+  unsubscribeCallDoc = onSnapshot(callDocRef, async (snapshot) => {
+    const data = snapshot.data();
+    if (!data) return;
+
+    if (data.status === 'declined' || data.status === 'ended') {
+      stopRingtone();
+      onStateChange({
+        callId,
+        caller: callerUsername,
+        receiver: receiverUsername,
+        isIncoming: false,
+        status: data.status,
+        isVideo: true,
+      });
+      cleanupVideoResources();
+      return;
+    }
+
+    if (!peerConnection.currentRemoteDescription && data.answer) {
+      stopRingtone();
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+      onStateChange({
+        callId,
+        caller: callerUsername,
+        receiver: receiverUsername,
+        isIncoming: false,
+        status: 'connected',
+        startTime: Date.now(),
+        isVideo: true,
+      });
+    }
+  });
+
+  unsubscribeCandidates = onSnapshot(receiverCandidatesCol, (snapshot) => {
+    snapshot.docChanges().forEach(async (change) => {
+      if (change.type === 'added') {
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+        } catch {}
+      }
+    });
+  });
+
+  return callId;
+}
+
+/**
+ * Answers an incoming video call and attaches local/remote streams to provided video elements.
+ */
+export async function answerVideoCall(
+  callId: string,
+  onStateChange: CallListener,
+  localVideoEl?: HTMLVideoElement | null,
+  remoteVideoEl?: HTMLVideoElement | null
+): Promise<void> {
+  stopRingtone();
+
+  const callDocRef = doc(db, 'calls', callId);
+  const callSnapshot = await getDoc(callDocRef);
+  if (!callSnapshot.exists()) throw new Error('Call does not exist or was ended.');
+
+  const callData = callSnapshot.data();
+  activeCallId = callId;
+
+  let localStream: MediaStream;
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+    });
+  } catch (err) {
+    throw new Error('Camera and microphone permission required to answer video call.');
+  }
+
+  currentVideoStream = localStream;
+  currentLocalStream = localStream;
+
+  if (localVideoEl) {
+    localVideoElement = localVideoEl;
+    localVideoEl.srcObject = localStream;
+    localVideoEl.muted = true;
+    localVideoEl.play().catch(() => {});
+  }
+  if (remoteVideoEl) {
+    remoteVideoElement = remoteVideoEl;
+  }
+  notifyStreamSubscribers();
+
+  const peerConnection = new RTCPeerConnection(ICE_SERVERS);
+  currentPeerConnection = peerConnection;
+
+  localStream.getTracks().forEach((track) => {
+    peerConnection.addTrack(track, localStream);
+  });
+
+  peerConnection.ontrack = (event) => {
+    const [remoteStream] = event.streams;
+    currentRemoteStream = remoteStream;
+    notifyStreamSubscribers();
+    if (remoteVideoElement) {
+      remoteVideoElement.srcObject = remoteStream;
+      remoteVideoElement.play().catch(() => {});
+    }
+    const audioEl = getRemoteAudioElement();
+    audioEl.srcObject = remoteStream;
+    audioEl.play().catch(() => {});
+  };
+
+  const callerCandidatesCol = collection(callDocRef, 'callerCandidates');
+  const receiverCandidatesCol = collection(callDocRef, 'receiverCandidates');
+
+  peerConnection.onicecandidate = (event) => {
+    if (event.candidate) {
+      addDoc(receiverCandidatesCol, event.candidate.toJSON()).catch(() => {});
+    }
+  };
+
+  await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.offer));
+  const answerDescription = await peerConnection.createAnswer();
+  await peerConnection.setLocalDescription(answerDescription);
+
+  await updateDoc(callDocRef, {
+    answer: { type: answerDescription.type, sdp: answerDescription.sdp },
+    status: 'connected',
+    connectedAt: Date.now(),
+  });
+
+  onStateChange({
+    callId,
+    caller: callData.callerDisplay || callData.caller,
+    receiver: callData.receiverDisplay || callData.receiver,
+    isIncoming: true,
+    status: 'connected',
+    startTime: Date.now(),
+    isVideo: true,
+  });
+
+  unsubscribeCallDoc = onSnapshot(callDocRef, (snapshot) => {
+    const data = snapshot.data();
+    if (!data) return;
+    if (data.status === 'ended' || data.status === 'declined') {
+      onStateChange({
+        callId,
+        caller: data.caller,
+        receiver: data.receiver,
+        isIncoming: true,
+        status: data.status,
+        isVideo: true,
+      });
+      cleanupVideoResources();
+    }
+  });
+
+  unsubscribeCandidates = onSnapshot(callerCandidatesCol, (snapshot) => {
+    snapshot.docChanges().forEach(async (change) => {
+      if (change.type === 'added') {
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+        } catch {}
+      }
+    });
+  });
+}
+
+function cleanupVideoResources(): void {
+  if (currentVideoStream) {
+    currentVideoStream.getTracks().forEach((t) => t.stop());
+    currentVideoStream = null;
+  }
+  currentRemoteStream = null;
+  notifyStreamSubscribers();
+  if (localVideoElement) {
+    localVideoElement.srcObject = null;
+    localVideoElement = null;
+  }
+  if (remoteVideoElement) {
+    remoteVideoElement.srcObject = null;
+    remoteVideoElement = null;
+  }
+  cleanupCallResources();
+}
+
+

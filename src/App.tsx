@@ -8,9 +8,11 @@ import { NotebooksView } from './components/NotebooksView';
 import { SharedContentsView } from './components/SharedContentsView';
 import { FloatingDocumentViewer } from './components/FloatingDocumentViewer';
 import { FloatingCallWidget } from './components/FloatingCallWidget';
+import { FloatingPeerChat } from './components/FloatingPeerChat';
 import { ContactUsPage } from './components/ContactUsPage';
 import type { ChatSession, ChatMessage } from './types/chat';
-import type { NotebookFile, AttachedPage } from './types/notebook';
+import type { NotebookItem, NotebookFile, AttachedPage, ShareSelection } from './types/notebook';
+import { subscribeToNotebooks } from './services/notebookService';
 import type { UserProfile } from './services/userService';
 import type { ActiveCallState } from './services/callService';
 import {
@@ -27,6 +29,7 @@ import {
 } from './services/chatService';
 import {
   sendChatInvite,
+  sendNotebookShareInvite,
   subscribeToIncomingInvites,
   subscribeToSentInvites,
   acceptChatInvite,
@@ -65,6 +68,10 @@ export default function App() {
   const [isViewerMinimized, setIsViewerMinimized] = useState(false);
   const [attachedPages, setAttachedPages] = useState<AttachedPage[]>([]);
 
+  // Notebooks state & Sharing staging
+  const [notebooks, setNotebooks] = useState<NotebookItem[]>([]);
+  const [shareSelection, setShareSelection] = useState<ShareSelection | null>(null);
+
   // WebRTC Real-Time Voice Call State
   const [activeCall, setActiveCall] = useState<ActiveCallState | null>(null);
 
@@ -72,6 +79,15 @@ export default function App() {
   useEffect(() => {
     syncPendingLocalUsersToFirestore();
   }, []);
+
+  // Real-time listener for current user's notebooks in Firebase
+  useEffect(() => {
+    if (!currentUser?.username) return;
+    const unsubscribe = subscribeToNotebooks(currentUser.username, (userNotebooks) => {
+      setNotebooks(userNotebooks);
+    });
+    return () => unsubscribe();
+  }, [currentUser?.username]);
 
   // Real-time listener for all signed users from Firebase Firestore
   useEffect(() => {
@@ -87,10 +103,15 @@ export default function App() {
   useEffect(() => {
     if (!currentUser?.username) return;
     const unsubscribe = subscribeToIncomingCalls(currentUser.username, (incomingCall) => {
+      // Peer video calls are handled directly inside FloatingPeerChat
+      if (incomingCall.isVideo || incomingCall.callId.startsWith('vcall_')) {
+        return;
+      }
       setActiveCall(incomingCall);
     });
     return () => unsubscribe();
   }, [currentUser?.username]);
+
 
   useEffect(() => {
     if (!currentUser?.username) {
@@ -475,16 +496,31 @@ export default function App() {
     }
   };
 
+  const handleShareWithUser = async (targetUsername: string, selection: ShareSelection) => {
+    if (!currentUser?.username) return;
+    try {
+      await sendNotebookShareInvite(currentUser.username, targetUsername, selection);
+      console.log(`[RAD_SHARE] Sent share invite for ${selection.type} to @${targetUsername}`);
+    } catch (err: any) {
+      console.error('Failed to share with user:', err);
+      alert(err?.message || 'Failed to share item with user.');
+    }
+  };
+
   const handleAcceptInvite = async (invite: ChatInvite) => {
     try {
-      const session = await acceptChatInvite(invite);
-      setChats((prev) => mergeChatLists(prev, [session]));
-      setPendingChat(session);
-      setActiveChatId(session.id);
-      setActiveView('dashboard');
+      const res = await acceptChatInvite(invite, currentUser?.username);
+      if (res.chatSession) {
+        setChats((prev) => mergeChatLists(prev, [res.chatSession!]));
+        setPendingChat(res.chatSession);
+        setActiveChatId(res.chatSession.id);
+        setActiveView('dashboard');
+      } else if (res.notebook) {
+        setActiveView('notebooks');
+      }
     } catch (err: any) {
       console.error('Failed to accept invite:', err);
-      alert(err?.message || 'Could not open the shared chat.');
+      alert(err?.message || 'Could not open the shared item.');
     }
   };
 
@@ -519,6 +555,9 @@ export default function App() {
   }
 
   const activeChat = chats.find((c) => c.id === activeChatId) || (pendingChat?.id === activeChatId ? pendingChat : undefined);
+  const activeCollaborator = activeChat?.participants?.find(
+    (p) => p.toLowerCase().trim() !== currentUser.username.toLowerCase().trim()
+  );
 
   return (
     <div style={styles.appWrapper}>
@@ -569,10 +608,13 @@ export default function App() {
           isRightSidebarOpen={isRightSidebarOpen}
           onToggleRightSidebar={handleToggleRightSidebar}
           chats={chats}
+          notebooks={notebooks}
           allUsers={allUsers}
           currentUsername={currentUser.username}
           onSelectChat={handleSelectChat}
           onInviteUser={handleInviteUser}
+          onOpenNotebook={() => setActiveView('notebooks')}
+          onOpenDocumentViewer={handleOpenDocumentViewer}
           pendingInviteUsernames={sentInvites.map((invite) => invite.toUsername)}
           isLoading={isChatsLoading || isUsersLoading}
         />
@@ -584,6 +626,12 @@ export default function App() {
           onToggleRightSidebar={handleToggleRightSidebar}
           username={currentUser.username}
           onOpenDocumentViewer={handleOpenDocumentViewer}
+          shareSelection={shareSelection}
+          onSelectForShare={(selection) => {
+            setShareSelection(selection);
+            if (!isRightSidebarOpen) setIsRightSidebarOpen(true);
+          }}
+          onClearShareSelection={() => setShareSelection(null)}
         />
       ) : (
         <Dashboard
@@ -613,6 +661,9 @@ export default function App() {
         onAcceptInvite={handleAcceptInvite}
         onDeclineInvite={handleDeclineInvite}
         isLoadingUsers={isUsersLoading}
+        shareSelection={shareSelection}
+        onClearShareSelection={() => setShareSelection(null)}
+        onShareWithUser={handleShareWithUser}
       />
 
       {/* Floating, Movable, Resizable Document Viewer Window */}
@@ -632,6 +683,20 @@ export default function App() {
         onCallEnded={() => setActiveCall(null)}
         onCallStateChange={setActiveCall}
       />
+
+      {/* Compact Floating Collaborator Chat for Shared Sessions */}
+      {activeChatId && activeChat && activeCollaborator && (
+        <FloatingPeerChat
+          key={activeChat.id}
+          chatId={activeChat.id}
+          currentUsername={currentUser.username}
+          collaboratorUsername={activeCollaborator}
+          collaboratorProfile={allUsers.find(
+            (u) => u.username.toLowerCase().trim() === activeCollaborator.toLowerCase().trim()
+          )}
+          bottomOffset={activeViewingFile ? 84 : 24}
+        />
+      )}
     </div>
   );
 }

@@ -43,4 +43,15 @@ export interface NotebookItem {
   fileSize?: string;
   pageCount?: string;
   summary?: string;
+  // Shared notebook metadata
+  isShared?: boolean;
+  sharedBy?: string;
+  sharedWith?: string[];
+  sharedAt?: number;
+}
+
+export interface ShareSelection {
+  type: 'notebook' | 'document';
+  notebook: NotebookItem;
+  file?: NotebookFile;
 }

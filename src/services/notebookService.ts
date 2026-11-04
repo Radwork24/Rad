@@ -88,6 +88,10 @@ export function subscribeToNotebooks(
             files: Array.isArray(data.files) ? data.files : [],
             tags: Array.isArray(data.tags) ? data.tags : [],
             type: data.type || 'folder',
+            isShared: Boolean(data.isShared),
+            sharedBy: data.sharedBy,
+            sharedWith: Array.isArray(data.sharedWith) ? data.sharedWith : [],
+            sharedAt: data.sharedAt,
           });
         });
 
@@ -378,3 +382,82 @@ export async function deleteFileFromNotebook(
     console.warn('IndexedDB remove blob notice:', err);
   }
 }
+
+/**
+ * Saves a shared notebook (or newly constructed notebook from a shared file)
+ * to a recipient's user account in Firestore and localStorage.
+ */
+export async function saveSharedNotebookToUser(
+  targetUserId: string,
+  notebook: NotebookItem
+): Promise<NotebookItem> {
+  const userKey = targetUserId.toLowerCase().trim();
+  const current = getLocalNotebooks(targetUserId);
+
+  const existingIdx = current.findIndex((nb) => nb.id === notebook.id);
+  const updatedList =
+    existingIdx >= 0
+      ? current.map((nb, i) => (i === existingIdx ? notebook : nb))
+      : [notebook, ...current];
+  saveLocalNotebooks(targetUserId, updatedList);
+
+  try {
+    const notebookDocRef = doc(db, 'users', userKey, 'notebooks', notebook.id);
+    await setDoc(notebookDocRef, {
+      ...notebook,
+      updatedAt: Date.now(),
+    });
+  } catch (err) {
+    console.warn('Could not save shared notebook to Firestore:', err);
+  }
+
+  return notebook;
+}
+
+/**
+ * Marks a notebook in the owner's account as shared with a target user.
+ */
+export async function markNotebookAsSharedWith(
+  ownerUserId: string,
+  notebookId: string,
+  recipientUsername: string
+): Promise<void> {
+  const userKey = ownerUserId.toLowerCase().trim();
+  const current = getLocalNotebooks(ownerUserId);
+
+  const updatedList = current.map((nb) => {
+    if (nb.id === notebookId) {
+      const existingShared = nb.sharedWith || [];
+      const rec = recipientUsername.trim();
+      const nextShared = existingShared.includes(rec) ? existingShared : [...existingShared, rec];
+      return {
+        ...nb,
+        isShared: true,
+        sharedWith: nextShared,
+        sharedAt: nb.sharedAt || Date.now(),
+      };
+    }
+    return nb;
+  });
+  saveLocalNotebooks(ownerUserId, updatedList);
+
+  try {
+    const notebookDocRef = doc(db, 'users', userKey, 'notebooks', notebookId);
+    const snap = await getDoc(notebookDocRef);
+    if (snap.exists()) {
+      const data = snap.data();
+      const existingShared: string[] = Array.isArray(data.sharedWith) ? data.sharedWith : [];
+      const rec = recipientUsername.trim();
+      const nextShared = existingShared.includes(rec) ? existingShared : [...existingShared, rec];
+      await updateDoc(notebookDocRef, {
+        isShared: true,
+        sharedWith: nextShared,
+        sharedAt: data.sharedAt || Date.now(),
+        updatedAt: Date.now(),
+      });
+    }
+  } catch (err) {
+    console.warn('Could not update sharedWith in Firestore:', err);
+  }
+}
+
