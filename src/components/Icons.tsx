@@ -931,7 +931,6 @@ export const MicOffIcon: React.FC<{ size?: number; className?: string }> = ({ si
   </svg>
 );
 
-
 export const VideoIcon: React.FC<{ size?: number; className?: string }> = ({ size = 16, className = '' }) => (
   <svg
     width={size}
@@ -961,13 +960,14 @@ export const VideoOffIcon: React.FC<{ size?: number; className?: string }> = ({ 
     strokeLinejoin="round"
     className={className}
   >
-    <line x1="2" y1="2" x2="22" y2="22" />
-    <path d="M10.66 6H14a2 2 0 0 1 2 2v2.34l1 1L23 7v10" />
-    <path d="M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2l10 10z" />
+    <line x1="1" y1="1" x2="23" y2="23" />
+    <path d="M21 21l-5.64-5.64" />
+    <polygon points="23 7 16 12 16 8.58 20.42 4.16 23 7" />
+    <path d="M1 5a2 2 0 0 1 2-2h1.17l14.83 14.83A2 2 0 0 1 17 19H3a2 2 0 0 1-2-2V5z" />
   </svg>
 );
 
-export const PhoneCallIcon: React.FC<{ size?: number; className?: string }> = ({ size = 16, className = '' }) => (
+export const MusicIcon: React.FC<{ size?: number; className?: string }> = ({ size = 16, className = '' }) => (
   <svg
     width={size}
     height={size}
@@ -979,12 +979,28 @@ export const PhoneCallIcon: React.FC<{ size?: number; className?: string }> = ({
     strokeLinejoin="round"
     className={className}
   >
-    <polyline points="23 7 23 1 17 1" />
-    <line x1="16" y1="8" x2="23" y2="1" />
-    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.09 9.1a19.79 19.79 0 0 1-3-8.63A2 2 0 0 1 3 .78H6a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.09 8a16 16 0 0 0 6.91 6.91l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
+    <path d="M9 18V5l12-2v13" />
+    <circle cx="6" cy="18" r="3" />
+    <circle cx="18" cy="16" r="3" />
   </svg>
 );
 
+export const HeadphonesIcon: React.FC<{ size?: number; className?: string }> = ({ size = 16, className = '' }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+  >
+    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+    <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
+  </svg>
+);
 
 
 

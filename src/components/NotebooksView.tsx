@@ -14,7 +14,7 @@ import {
   TrashIcon,
   EyeIcon,
 } from './Icons';
-import type { NotebookItem, NotebookFile, ShareSelection } from '../types/notebook';
+import type { NotebookItem, NotebookFile } from '../types/notebook';
 import { DocumentViewerModal } from './DocumentViewerModal';
 import {
   subscribeToNotebooks,
@@ -33,9 +33,6 @@ interface NotebooksViewProps {
   username?: string;
   onStartChatWithNotebook?: (prompt: string) => void;
   onOpenDocumentViewer?: (file: NotebookFile) => void;
-  shareSelection?: ShareSelection | null;
-  onSelectForShare?: (selection: ShareSelection) => void;
-  onClearShareSelection?: () => void;
 }
 
 // Blue-toned spine gradients for book / folder covers
@@ -56,9 +53,6 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
   username = 'default',
   onStartChatWithNotebook: _onStartChatWithNotebook,
   onOpenDocumentViewer,
-  shareSelection,
-  onSelectForShare,
-  onClearShareSelection,
 }) => {
   const [notebooks, setNotebooks] = useState<NotebookItem[]>([]);
   const [isLoadingNotebooks, setIsLoadingNotebooks] = useState(true);
@@ -342,34 +336,6 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                     <span>{isUploading ? 'Uploading to Firebase...' : 'Upload PDF / PPT'}</span>
                   </button>
 
-                  {/* Share Notebook button */}
-                  {(() => {
-                    const isNotebookSelectedForShare =
-                      shareSelection?.type === 'notebook' && shareSelection.notebook.id === activeNotebook.id;
-                    return (
-                      <button
-                        onClick={() => {
-                          if (onSelectForShare) {
-                            if (isNotebookSelectedForShare) {
-                              onClearShareSelection?.();
-                            } else {
-                              onSelectForShare({ type: 'notebook', notebook: activeNotebook });
-                            }
-                          }
-                        }}
-                        style={isNotebookSelectedForShare ? styles.folderShareBtnActive : styles.folderShareBtn}
-                        title={
-                          isNotebookSelectedForShare
-                            ? 'Notebook selected for sharing (click to deselect)'
-                            : 'Select this entire notebook to share with friends'
-                        }
-                      >
-                        <PlusIcon size={14} />
-                        <span>{isNotebookSelectedForShare ? 'Selected to Share' : 'Share Notebook'}</span>
-                      </button>
-                    );
-                  })()}
-
                   <button
                     onClick={() => handleDeleteNotebook(activeNotebook.id)}
                     style={styles.folderDeleteBtn}
@@ -431,8 +397,6 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                   {activeNotebook.files.map((file) => {
                     const isPdf = file.type === 'pdf';
                     const isPpt = file.type === 'ppt' || file.type === 'pptx';
-                    const isFileSelectedForShare =
-                      shareSelection?.type === 'document' && shareSelection.file?.id === file.id;
 
                     return (
                       <div
@@ -444,14 +408,7 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                             setActiveViewingFile(file);
                           }
                         }}
-                        style={{
-                          ...styles.fileCard,
-                          cursor: 'pointer',
-                          borderColor: isFileSelectedForShare ? 'var(--accent-terracotta)' : 'rgba(255,255,255,0.1)',
-                          boxShadow: isFileSelectedForShare
-                            ? '0 0 0 2px rgba(217, 119, 87, 0.4), 0 4px 16px rgba(0,0,0,0.5)'
-                            : '0 3px 10px rgba(0,0,0,0.4)',
-                        }}
+                        style={{ ...styles.fileCard, cursor: 'pointer' }}
                         title={`Click to view "${file.name}" in floating window`}
                       >
                         <div style={styles.fileCardTop}>
@@ -466,38 +423,13 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                             <span>{file.type.toUpperCase()}</span>
                           </div>
 
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            {/* Share Document button */}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (onSelectForShare) {
-                                  if (isFileSelectedForShare) {
-                                    onClearShareSelection?.();
-                                  } else {
-                                    onSelectForShare({ type: 'document', notebook: activeNotebook, file });
-                                  }
-                                }
-                              }}
-                              style={isFileSelectedForShare ? styles.fileShareBtnActive : styles.fileShareBtn}
-                              title={
-                                isFileSelectedForShare
-                                  ? 'Document selected for sharing (click to deselect)'
-                                  : 'Select this document to share with friends'
-                              }
-                            >
-                              <PlusIcon size={12} />
-                              <span>{isFileSelectedForShare ? 'Selected' : 'Share'}</span>
-                            </button>
-
-                            <button
-                              onClick={(e) => handleDeleteFile(activeNotebook.id, file.id, file.name, e)}
-                              style={styles.fileDeleteBtn}
-                              title="Delete file"
-                            >
-                              <TrashIcon size={14} />
-                            </button>
-                          </div>
+                          <button
+                            onClick={(e) => handleDeleteFile(activeNotebook.id, file.id, file.name, e)}
+                            style={styles.fileDeleteBtn}
+                            title="Delete file"
+                          >
+                            <TrashIcon size={14} />
+                          </button>
                         </div>
 
                         <h3 style={styles.fileName} title={file.name}>
@@ -656,8 +588,6 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                 const fileCount = nb.files ? nb.files.length : 0;
                 const pdfCount = nb.files ? nb.files.filter((f) => f.type === 'pdf').length : 0;
                 const pptCount = nb.files ? nb.files.filter((f) => f.type === 'ppt' || f.type === 'pptx').length : 0;
-                const isNbSelectedForShare =
-                  shareSelection?.type === 'notebook' && shareSelection.notebook.id === nb.id;
 
                 let fileSubtitle = 'Empty · Ready for uploads';
                 if (fileCount > 0) {
@@ -673,13 +603,7 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                   <div
                     key={nb.id}
                     onClick={() => setOpenedNotebookId(nb.id)}
-                    style={{
-                      ...styles.notebookFolderCard,
-                      borderColor: isNbSelectedForShare ? 'var(--accent-terracotta)' : 'rgba(255,255,255,0.1)',
-                      boxShadow: isNbSelectedForShare
-                        ? '0 0 0 2px rgba(217, 119, 87, 0.4), 0 8px 24px rgba(0, 0, 0, 0.6)'
-                        : '0 4px 14px rgba(0, 0, 0, 0.4)',
-                    }}
+                    style={styles.notebookFolderCard}
                     title={`Open "${nb.title}" folder`}
                   >
                     {/* Realistic 3D Spine */}
@@ -692,52 +616,20 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
 
                     {/* Card Inner Content */}
                     <div style={styles.cardContent}>
-                      {/* Top Row: Folder Badge, Shared Pill & Actions */}
+                      {/* Top Row: Folder Badge & Delete Action */}
                       <div style={styles.cardTopRow}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <div style={styles.folderBadgePill}>
-                            <FolderIcon size={12} />
-                            <span>FOLDER</span>
-                          </div>
-                          {nb.isShared && (
-                            <div style={styles.sharedBadgePill} title={`Shared with you by @${nb.sharedBy || 'collaborator'}`}>
-                              <span>👥 @{nb.sharedBy}</span>
-                            </div>
-                          )}
+                        <div style={styles.folderBadgePill}>
+                          <FolderIcon size={12} />
+                          <span>FOLDER</span>
                         </div>
 
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          {/* Share Button on Notebook Card */}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (onSelectForShare) {
-                                if (isNbSelectedForShare) {
-                                  onClearShareSelection?.();
-                                } else {
-                                  onSelectForShare({ type: 'notebook', notebook: nb });
-                                }
-                              }
-                            }}
-                            style={isNbSelectedForShare ? styles.cardShareBtnActive : styles.cardShareBtn}
-                            title={
-                              isNbSelectedForShare
-                                ? 'Selected for sharing (click to deselect)'
-                                : 'Select this notebook to share with friends via sidebar'
-                            }
-                          >
-                            <PlusIcon size={12} />
-                            <span>{isNbSelectedForShare ? 'Selected' : 'Share'}</span>
-                          </button>
-
-                          <button
-                            onClick={(e) => handleDeleteNotebook(nb.id, e)}
-                            style={styles.cardDeleteBtn}
-                            title="Delete notebook"
-                          >
-                            <TrashIcon size={14} />
-                          </button>
-                        </div>
+                        <button
+                          onClick={(e) => handleDeleteNotebook(nb.id, e)}
+                          style={styles.cardDeleteBtn}
+                          title="Delete notebook"
+                        >
+                          <TrashIcon size={14} />
+                        </button>
                       </div>
 
                       {/* Icon & Title */}
@@ -870,47 +762,6 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
           file={activeViewingFile}
           onClose={() => setActiveViewingFile(null)}
         />
-      )}
-
-      {/* Floating Share Notification Bar at bottom */}
-      {shareSelection && (
-        <div style={styles.floatingShareBanner}>
-          <div style={styles.floatingShareLeft}>
-            <div style={styles.floatingSharePulseIcon}>
-              <PlusIcon size={16} />
-            </div>
-            <div>
-              <div style={styles.floatingShareTitle}>
-                Ready to share {shareSelection.type === 'document' ? 'Document' : 'Notebook'}:{' '}
-                <span style={{ color: 'var(--accent-terracotta)', fontWeight: 600 }}>
-                  {shareSelection.type === 'document'
-                    ? shareSelection.file?.name
-                    : shareSelection.notebook.title}
-                </span>
-              </div>
-              <div style={styles.floatingShareSubtitle}>
-                Open the right sidebar (👥) and click &quot;+ Share&quot; beside any friend to send an invite.
-              </div>
-            </div>
-          </div>
-
-          <div style={styles.floatingShareRight}>
-            {onToggleRightSidebar && !isRightSidebarOpen && (
-              <button
-                onClick={onToggleRightSidebar}
-                style={styles.floatingShareActionBtn}
-              >
-                Open Friends Sidebar 👥
-              </button>
-            )}
-            <button
-              onClick={() => onClearShareSelection?.()}
-              style={styles.floatingShareCancelBtn}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
       )}
     </main>
   );
@@ -1735,180 +1586,4 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     transition: 'opacity 0.15s ease',
   },
-
-  /* ========================================================
-     SHARING BUTTONS & FLOATING BAR STYLES
-     ======================================================== */
-  cardShareBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    border: '1px solid rgba(255,255,255,0.12)',
-    color: 'rgba(255,255,255,0.75)',
-    padding: '3px 8px',
-    borderRadius: '6px',
-    fontSize: '11px',
-    fontWeight: 500,
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  cardShareBtnActive: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-    backgroundColor: 'rgba(217, 119, 87, 0.2)',
-    border: '1px solid var(--accent-terracotta)',
-    color: '#ff9c7d',
-    padding: '3px 8px',
-    borderRadius: '6px',
-    fontSize: '11px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  fileShareBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    border: '1px solid rgba(255,255,255,0.1)',
-    color: 'rgba(255,255,255,0.7)',
-    padding: '3px 8px',
-    borderRadius: '5px',
-    fontSize: '11px',
-    fontWeight: 500,
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  fileShareBtnActive: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-    backgroundColor: 'rgba(217, 119, 87, 0.2)',
-    border: '1px solid var(--accent-terracotta)',
-    color: '#ff9c7d',
-    padding: '3px 8px',
-    borderRadius: '5px',
-    fontSize: '11px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  folderShareBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    border: '1px solid rgba(255,255,255,0.12)',
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: '13px',
-    fontWeight: 500,
-    padding: '8px 14px',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  folderShareBtnActive: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    backgroundColor: 'rgba(217, 119, 87, 0.2)',
-    border: '1px solid var(--accent-terracotta)',
-    color: '#ff9c7d',
-    fontSize: '13px',
-    fontWeight: 600,
-    padding: '8px 14px',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  sharedBadgePill: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-    padding: '3px 7px',
-    borderRadius: '10px',
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    color: '#34d399',
-    fontSize: '10px',
-    fontWeight: 600,
-  },
-  floatingShareBanner: {
-    position: 'absolute',
-    bottom: '20px',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    width: 'calc(100% - 48px)',
-    maxWidth: '820px',
-    backgroundColor: 'rgba(18, 18, 18, 0.95)',
-    border: '1px solid rgba(217, 119, 87, 0.5)',
-    borderRadius: '12px',
-    padding: '12px 18px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: '16px',
-    boxShadow: '0 12px 36px rgba(0, 0, 0, 0.7), 0 0 20px rgba(217, 119, 87, 0.2)',
-    backdropFilter: 'blur(10px)',
-    zIndex: 90,
-  },
-  floatingShareLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    minWidth: 0,
-  },
-  floatingSharePulseIcon: {
-    width: '34px',
-    height: '34px',
-    borderRadius: '50%',
-    backgroundColor: 'rgba(217, 119, 87, 0.2)',
-    color: 'var(--accent-terracotta)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  floatingShareTitle: {
-    fontSize: '13px',
-    fontWeight: 500,
-    color: '#f5f2eb',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  floatingShareSubtitle: {
-    fontSize: '11px',
-    color: '#9c978e',
-    marginTop: '2px',
-  },
-  floatingShareRight: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '10px',
-    flexShrink: 0,
-  },
-  floatingShareActionBtn: {
-    backgroundColor: 'var(--accent-terracotta)',
-    border: 'none',
-    color: '#ffffff',
-    fontSize: '12px',
-    fontWeight: 600,
-    padding: '7px 14px',
-    borderRadius: '7px',
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  floatingShareCancelBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    border: '1px solid rgba(255, 255, 255, 0.12)',
-    color: 'rgba(255, 255, 255, 0.7)',
-    fontSize: '12px',
-    fontWeight: 500,
-    padding: '7px 12px',
-    borderRadius: '7px',
-    cursor: 'pointer',
-  },
 };
-

@@ -105,8 +105,12 @@ export function optimizeConversationContext(
 
       if (summaryBulletPoints.length > 0) {
         result.push({
-          role: 'system',
-          content: `[Context Memory: In earlier messages of this chat, the following topics were covered:\n${summaryBulletPoints.join('\n')}\nMaintain continuity with these topics.]`,
+          role: 'user',
+          content: `[Context Memory: In earlier messages of this chat, the following topics were covered:\n${summaryBulletPoints.join('\n')}\nPlease maintain continuity with these topics.]`,
+        });
+        result.push({
+          role: 'assistant',
+          content: 'Understood. I will maintain continuity with all previously discussed topics and equations.',
         });
       }
     }

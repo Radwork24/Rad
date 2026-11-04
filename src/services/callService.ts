@@ -23,21 +23,76 @@ export interface ActiveCallState {
 
 export type CallListener = (call: ActiveCallState | null) => void;
 export type IncomingCallListener = (call: ActiveCallState) => void;
+export type VideoStreamsListener = (
+  localStream: MediaStream | null,
+  remoteStream: MediaStream | null
+) => void;
 
+// ─── ICE / STUN + TURN config ────────────────────────────────────────────────
+// Free STUN servers (Google) + open TURN relay (metered.ca free tier)
+// TURN is critical: without it, calls fail when users are behind symmetric NAT
+// (mobile networks, corporate firewalls, etc.)
 const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
     { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    // Open TURN relay — no signup required, works globally
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
+  iceCandidatePoolSize: 10,
 };
 
+// ─── getUserMedia constraints ─────────────────────────────────────────────────
+// echoCancellation + noiseSuppression + autoGainControl are mandatory.
+// These are set on BOTH caller and receiver to prevent the feedback loop
+// where the speaker output is re-captured by the microphone.
+const AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+};
+
+const VIDEO_CONSTRAINTS: MediaTrackConstraints = {
+  width: { ideal: 1280, max: 1920 },
+  height: { ideal: 720, max: 1080 },
+  facingMode: 'user',
+  frameRate: { ideal: 30, max: 60 },
+};
+
+// ─── Module-level state ───────────────────────────────────────────────────────
 let currentPeerConnection: RTCPeerConnection | null = null;
 let currentLocalStream: MediaStream | null = null;
+let currentRemoteStream: MediaStream | null = null;
+
+// A single <audio> element for voice-only calls and voice track in video calls.
+// CRITICAL: this is the ONLY element playing remote audio.
+// The remote <video> element is kept muted to prevent double-audio echo.
 let remoteAudioElement: HTMLAudioElement | null = null;
+
+let localVideoElement: HTMLVideoElement | null = null;
+let remoteVideoElement: HTMLVideoElement | null = null;
+let videoStreamSubscribers: VideoStreamsListener[] = [];
 let activeCallId: string | null = null;
 let unsubscribeCallDoc: (() => void) | null = null;
 let unsubscribeCandidates: (() => void) | null = null;
 
-// Ringtone synthesizers using Web Audio API (no external asset dependencies)
+// ICE candidate queue: holds candidates that arrive before remote description is set
+let pendingIceCandidates: RTCIceCandidateInit[] = [];
+
+// ─── Ringtone / Web Audio API ─────────────────────────────────────────────────
 let ringtoneInterval: number | null = null;
 let audioContext: AudioContext | null = null;
 
@@ -118,8 +173,11 @@ export function stopRingtone(): void {
   }
 }
 
+// ─── Remote audio element ─────────────────────────────────────────────────────
 /**
- * Ensures a hidden <audio> element exists to play the peer's live voice.
+ * Returns a persistent hidden <audio> element that plays the remote peer's voice.
+ * This is the SINGLE point of audio output for all call types.
+ * The remote <video> element is always set to muted to prevent double-audio echo.
  */
 function getRemoteAudioElement(): HTMLAudioElement {
   if (!remoteAudioElement) {
@@ -127,56 +185,128 @@ function getRemoteAudioElement(): HTMLAudioElement {
     remoteAudioElement.autoplay = true;
     remoteAudioElement.id = 'rad-remote-voice-audio';
     remoteAudioElement.style.display = 'none';
+    // Never muted — this is the intended audio output channel
+    remoteAudioElement.muted = false;
     document.body.appendChild(remoteAudioElement);
   }
   return remoteAudioElement;
 }
 
 /**
- * Initiates an outgoing WebRTC voice call to a friend.
+ * Wires remote stream audio to the hidden <audio> element (never to <video>).
+ * Keeps <video> muted to prevent double-playback echo.
+ */
+function playRemoteAudio(remoteStream: MediaStream): void {
+  const audioEl = getRemoteAudioElement();
+  audioEl.srcObject = remoteStream;
+  audioEl.play().catch((e) => console.warn('[Call] Remote audio autoplay blocked:', e));
+}
+
+// ─── ICE candidate queue ──────────────────────────────────────────────────────
+/**
+ * Flush queued ICE candidates to the peer connection once remote description is set.
+ * This solves the race condition where candidates arrive before setRemoteDescription().
+ */
+async function flushPendingCandidates(pc: RTCPeerConnection): Promise<void> {
+  if (pendingIceCandidates.length === 0) return;
+  console.log(`[Call] Flushing ${pendingIceCandidates.length} queued ICE candidates`);
+  for (const candidateInit of pendingIceCandidates) {
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
+    } catch (e) {
+      console.warn('[Call] Error adding queued ICE candidate:', e);
+    }
+  }
+  pendingIceCandidates = [];
+}
+
+/**
+ * Safely add an ICE candidate — queues it if remote description not yet set.
+ */
+async function safeAddIceCandidate(
+  pc: RTCPeerConnection,
+  candidateData: RTCIceCandidateInit
+): Promise<void> {
+  if (!pc.remoteDescription) {
+    // Queue it — will be flushed after setRemoteDescription()
+    pendingIceCandidates.push(candidateData);
+    return;
+  }
+  try {
+    await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+  } catch (e) {
+    console.warn('[Call] Error adding ICE candidate:', e);
+  }
+}
+
+// ─── Local stream acquisition ─────────────────────────────────────────────────
+async function getLocalStream(withVideo: boolean): Promise<MediaStream> {
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: AUDIO_CONSTRAINTS,
+      video: withVideo ? VIDEO_CONSTRAINTS : false,
+    });
+  } catch (err) {
+    if (withVideo) {
+      // Video failed (camera busy/denied) — fall back to audio only
+      console.warn('[Call] Camera unavailable, falling back to audio-only:', err);
+      return await navigator.mediaDevices.getUserMedia({
+        audio: AUDIO_CONSTRAINTS,
+        video: false,
+      });
+    }
+    console.error('[Call] Microphone access denied:', err);
+    throw new Error('Microphone permission is required to make a call.');
+  }
+}
+
+// ─── Peer connection factory ──────────────────────────────────────────────────
+function createPeerConnection(): RTCPeerConnection {
+  const pc = new RTCPeerConnection(ICE_SERVERS);
+
+  pc.onconnectionstatechange = () => {
+    console.log(`[Call] Connection state: ${pc.connectionState}`);
+  };
+  pc.oniceconnectionstatechange = () => {
+    console.log(`[Call] ICE connection state: ${pc.iceConnectionState}`);
+    if (pc.iceConnectionState === 'failed') {
+      console.warn('[Call] ICE failed — attempting ICE restart');
+      pc.restartIce();
+    }
+  };
+  pc.onicegatheringstatechange = () => {
+    console.log(`[Call] ICE gathering state: ${pc.iceGatheringState}`);
+  };
+
+  return pc;
+}
+
+// ─── startVoiceCall ───────────────────────────────────────────────────────────
+/**
+ * Initiates an outgoing WebRTC voice call.
  */
 export async function startVoiceCall(
   callerUsername: string,
   receiverUsername: string,
   onStateChange: CallListener
 ): Promise<string> {
-  // Clean up any stale call first
   await endVoiceCall();
+  pendingIceCandidates = [];
 
-  // 1. Get user microphone stream
-  let localStream: MediaStream;
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false,
-    });
-  } catch (err) {
-    console.error('Failed to access microphone:', err);
-    throw new Error('Microphone permission is required to make a voice call.');
-  }
-
+  const localStream = await getLocalStream(false);
   currentLocalStream = localStream;
-  const peerConnection = new RTCPeerConnection(ICE_SERVERS);
+
+  const peerConnection = createPeerConnection();
   currentPeerConnection = peerConnection;
 
-  // Add audio tracks to peer connection
-  localStream.getTracks().forEach((track) => {
-    peerConnection.addTrack(track, localStream);
-  });
+  localStream.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
 
-  // Handle incoming remote audio track
+  // Remote audio: route to hidden <audio> element ONLY (never to a video element)
   peerConnection.ontrack = (event) => {
     const [remoteStream] = event.streams;
-    const audioEl = getRemoteAudioElement();
-    audioEl.srcObject = remoteStream;
-    audioEl.play().catch((e) => console.warn('Autoplay blocked:', e));
+    playRemoteAudio(remoteStream);
   };
 
-  // Generate unique call document in Firestore
   const safeCaller = callerUsername.toLowerCase().trim();
   const safeReceiver = receiverUsername.toLowerCase().trim();
   const callId = `call_${safeCaller}_${safeReceiver}_${Date.now()}`;
@@ -186,34 +316,27 @@ export async function startVoiceCall(
   const callerCandidatesCol = collection(callDocRef, 'callerCandidates');
   const receiverCandidatesCol = collection(callDocRef, 'receiverCandidates');
 
-  // Push ICE candidates generated locally to Firestore
   peerConnection.onicecandidate = (event) => {
     if (event.candidate) {
       addDoc(callerCandidatesCol, event.candidate.toJSON()).catch((e) =>
-        console.warn('Error saving caller candidate:', e)
+        console.warn('[Call] Error saving caller candidate:', e)
       );
     }
   };
 
-  // Create WebRTC Offer
   const offer = await peerConnection.createOffer();
   await peerConnection.setLocalDescription(offer);
 
-  const callData = {
+  await setDoc(callDocRef, {
     callId,
     caller: safeCaller,
     receiver: safeReceiver,
     callerDisplay: callerUsername,
     receiverDisplay: receiverUsername,
     status: 'ringing',
-    offer: {
-      type: offer.type,
-      sdp: offer.sdp,
-    },
+    offer: { type: offer.type, sdp: offer.sdp },
     createdAt: Date.now(),
-  };
-
-  await setDoc(callDocRef, callData);
+  });
 
   playOutgoingTone();
 
@@ -225,50 +348,31 @@ export async function startVoiceCall(
     status: 'ringing',
   });
 
-  // Listen for the receiver's answer or status change
+  // Listen for answer or status change
   unsubscribeCallDoc = onSnapshot(callDocRef, async (snapshot) => {
     const data = snapshot.data();
     if (!data) return;
 
     if (data.status === 'declined' || data.status === 'ended') {
       stopRingtone();
-      onStateChange({
-        callId,
-        caller: callerUsername,
-        receiver: receiverUsername,
-        isIncoming: false,
-        status: data.status,
-      });
+      onStateChange({ callId, caller: callerUsername, receiver: receiverUsername, isIncoming: false, status: data.status });
       cleanupCallResources();
       return;
     }
 
     if (!peerConnection.currentRemoteDescription && data.answer) {
       stopRingtone();
-      const rtcAnswer = new RTCSessionDescription(data.answer);
-      await peerConnection.setRemoteDescription(rtcAnswer);
-
-      onStateChange({
-        callId,
-        caller: callerUsername,
-        receiver: receiverUsername,
-        isIncoming: false,
-        status: 'connected',
-        startTime: Date.now(),
-      });
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+      await flushPendingCandidates(peerConnection);
+      onStateChange({ callId, caller: callerUsername, receiver: receiverUsername, isIncoming: false, status: 'connected', startTime: Date.now() });
     }
   });
 
-  // Listen for ICE candidates added by receiver
+  // Listen for receiver's ICE candidates
   unsubscribeCandidates = onSnapshot(receiverCandidatesCol, (snapshot) => {
     snapshot.docChanges().forEach(async (change) => {
       if (change.type === 'added') {
-        const candidateData = change.doc.data();
-        try {
-          await peerConnection.addIceCandidate(new RTCIceCandidate(candidateData));
-        } catch (e) {
-          console.warn('Error adding receiver candidate:', e);
-        }
+        await safeAddIceCandidate(peerConnection, change.doc.data() as RTCIceCandidateInit);
       }
     });
   });
@@ -276,6 +380,7 @@ export async function startVoiceCall(
   return callId;
 }
 
+// ─── answerVoiceCall ──────────────────────────────────────────────────────────
 /**
  * Answers an incoming voice call.
  */
@@ -284,45 +389,26 @@ export async function answerVoiceCall(
   onStateChange: CallListener
 ): Promise<void> {
   stopRingtone();
+  pendingIceCandidates = [];
 
   const callDocRef = doc(db, 'calls', callId);
   const callSnapshot = await getDoc(callDocRef);
-  if (!callSnapshot.exists()) {
-    throw new Error('Call does not exist or was ended.');
-  }
+  if (!callSnapshot.exists()) throw new Error('Call does not exist or was ended.');
 
   const callData = callSnapshot.data();
   activeCallId = callId;
 
-  // 1. Get microphone access
-  let localStream: MediaStream;
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false,
-    });
-  } catch (err) {
-    console.error('Failed to get mic:', err);
-    throw new Error('Microphone permission is required to answer the call.');
-  }
-
+  const localStream = await getLocalStream(false);
   currentLocalStream = localStream;
-  const peerConnection = new RTCPeerConnection(ICE_SERVERS);
+
+  const peerConnection = createPeerConnection();
   currentPeerConnection = peerConnection;
 
-  localStream.getTracks().forEach((track) => {
-    peerConnection.addTrack(track, localStream);
-  });
+  localStream.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
 
   peerConnection.ontrack = (event) => {
     const [remoteStream] = event.streams;
-    const audioEl = getRemoteAudioElement();
-    audioEl.srcObject = remoteStream;
-    audioEl.play().catch((e) => console.warn('Autoplay error:', e));
+    playRemoteAudio(remoteStream);
   };
 
   const callerCandidatesCol = collection(callDocRef, 'callerCandidates');
@@ -331,25 +417,20 @@ export async function answerVoiceCall(
   peerConnection.onicecandidate = (event) => {
     if (event.candidate) {
       addDoc(receiverCandidatesCol, event.candidate.toJSON()).catch((e) =>
-        console.warn('Error adding answer candidate:', e)
+        console.warn('[Call] Error adding answer candidate:', e)
       );
     }
   };
 
-  // Set remote offer & generate answer
-  const offerDescription = callData.offer;
-  await peerConnection.setRemoteDescription(new RTCSessionDescription(offerDescription));
+  // Set remote description FIRST, then generate answer
+  await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.offer));
+  await flushPendingCandidates(peerConnection);
 
   const answerDescription = await peerConnection.createAnswer();
   await peerConnection.setLocalDescription(answerDescription);
 
-  const answer = {
-    type: answerDescription.type,
-    sdp: answerDescription.sdp,
-  };
-
   await updateDoc(callDocRef, {
-    answer,
+    answer: { type: answerDescription.type, sdp: answerDescription.sdp },
     status: 'connected',
     connectedAt: Date.now(),
   });
@@ -363,95 +444,336 @@ export async function answerVoiceCall(
     startTime: Date.now(),
   });
 
-  // Listen for call updates / remote end
   unsubscribeCallDoc = onSnapshot(callDocRef, (snapshot) => {
     const data = snapshot.data();
     if (!data) return;
     if (data.status === 'ended' || data.status === 'declined') {
-      onStateChange({
-        callId,
-        caller: data.caller,
-        receiver: data.receiver,
-        isIncoming: true,
-        status: data.status,
-      });
+      onStateChange({ callId, caller: data.caller, receiver: data.receiver, isIncoming: true, status: data.status });
       cleanupCallResources();
     }
   });
 
-  // Listen for caller ICE candidates
+  // Listen for caller's ICE candidates
   unsubscribeCandidates = onSnapshot(callerCandidatesCol, (snapshot) => {
     snapshot.docChanges().forEach(async (change) => {
       if (change.type === 'added') {
-        const candidateData = change.doc.data();
-        try {
-          await peerConnection.addIceCandidate(new RTCIceCandidate(candidateData));
-        } catch (e) {
-          console.warn('Error adding caller candidate:', e);
-        }
+        await safeAddIceCandidate(peerConnection, change.doc.data() as RTCIceCandidateInit);
       }
     });
   });
 }
 
-/**
- * Rejects or declines an incoming call.
- */
+// ─── rejectVoiceCall ──────────────────────────────────────────────────────────
 export async function rejectVoiceCall(callId: string): Promise<void> {
   stopRingtone();
   try {
-    const callDocRef = doc(db, 'calls', callId);
-    await updateDoc(callDocRef, {
-      status: 'declined',
-      endedAt: Date.now(),
-    });
+    await updateDoc(doc(db, 'calls', callId), { status: 'declined', endedAt: Date.now() });
   } catch (e) {
-    console.warn('Error declining call:', e);
+    console.warn('[Call] Error declining call:', e);
   }
   cleanupCallResources();
 }
 
-/**
- * Ends an active or ongoing voice call.
- */
+// ─── endVoiceCall ─────────────────────────────────────────────────────────────
 export async function endVoiceCall(): Promise<void> {
   stopRingtone();
   if (activeCallId) {
     try {
-      const callDocRef = doc(db, 'calls', activeCallId);
-      await updateDoc(callDocRef, {
-        status: 'ended',
-        endedAt: Date.now(),
-      });
+      await updateDoc(doc(db, 'calls', activeCallId), { status: 'ended', endedAt: Date.now() });
     } catch (e) {
-      console.warn('Error marking call ended:', e);
+      console.warn('[Call] Error marking call ended:', e);
     }
   }
   cleanupCallResources();
 }
 
-/**
- * Toggles the local microphone mute state.
- */
+// ─── toggleLocalMute ─────────────────────────────────────────────────────────
 export function toggleLocalMute(isMuted: boolean): void {
   if (currentLocalStream) {
     currentLocalStream.getAudioTracks().forEach((track) => {
       track.enabled = !isMuted;
     });
+    console.log(`[Call] Mic ${isMuted ? 'muted' : 'unmuted'}`);
   }
 }
 
+// ─── toggleLocalVideo ─────────────────────────────────────────────────────────
+export function toggleLocalVideo(isCameraOff: boolean): void {
+  if (currentLocalStream) {
+    currentLocalStream.getVideoTracks().forEach((track) => {
+      track.enabled = !isCameraOff;
+    });
+    console.log(`[Call] Camera ${isCameraOff ? 'off' : 'on'}`);
+  }
+}
+
+// ─── Video subscriber helpers ─────────────────────────────────────────────────
+function notifyVideoSubscribers(): void {
+  videoStreamSubscribers.forEach((cb) => {
+    try { cb(currentLocalStream, currentRemoteStream); } catch (e) {
+      console.warn('[Call] Video subscriber error:', e);
+    }
+  });
+}
+
+export function attachVideoElements(
+  localEl: HTMLVideoElement | null,
+  remoteEl: HTMLVideoElement | null
+): void {
+  localVideoElement = localEl;
+  remoteVideoElement = remoteEl;
+
+  if (localVideoElement && currentLocalStream) {
+    // Local preview: always muted to prevent hearing your own voice
+    localVideoElement.muted = true;
+    localVideoElement.srcObject = currentLocalStream;
+    localVideoElement.play().catch(() => {});
+  }
+  if (remoteVideoElement && currentRemoteStream) {
+    // Remote video: MUTED — audio comes from remoteAudioElement only (prevents double-audio echo)
+    remoteVideoElement.muted = true;
+    remoteVideoElement.srcObject = currentRemoteStream;
+    remoteVideoElement.play().catch(() => {});
+  }
+}
+
+export function subscribeToVideoStreams(callback: VideoStreamsListener): () => void {
+  videoStreamSubscribers.push(callback);
+  try { callback(currentLocalStream, currentRemoteStream); } catch (e) {
+    console.warn('[Call] Initial video callback error:', e);
+  }
+  return () => {
+    videoStreamSubscribers = videoStreamSubscribers.filter((cb) => cb !== callback);
+  };
+}
+
+// ─── startVideoCall ───────────────────────────────────────────────────────────
+export async function startVideoCall(
+  callerUsername: string,
+  receiverUsername: string,
+  onStateChange: CallListener,
+  localEl?: HTMLVideoElement | null,
+  remoteEl?: HTMLVideoElement | null
+): Promise<string> {
+  if (localEl !== undefined) localVideoElement = localEl;
+  if (remoteEl !== undefined) remoteVideoElement = remoteEl;
+  await endVoiceCall();
+  pendingIceCandidates = [];
+
+  const localStream = await getLocalStream(true);
+  currentLocalStream = localStream;
+
+  if (localVideoElement) {
+    localVideoElement.muted = true; // Local preview — never hear yourself
+    localVideoElement.srcObject = localStream;
+    localVideoElement.play().catch(() => {});
+  }
+  notifyVideoSubscribers();
+
+  const peerConnection = createPeerConnection();
+  currentPeerConnection = peerConnection;
+
+  localStream.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
+
+  peerConnection.ontrack = (event) => {
+    const [remoteStream] = event.streams;
+    currentRemoteStream = remoteStream;
+
+    if (remoteVideoElement) {
+      // MUTED: audio comes from the hidden <audio> element, NOT this <video> element.
+      // This is the primary fix for echo — dual audio output caused the feedback loop.
+      remoteVideoElement.muted = true;
+      remoteVideoElement.srcObject = remoteStream;
+      remoteVideoElement.play().catch(() => {});
+    }
+
+    // Route audio to the dedicated <audio> element (single source, no echo)
+    playRemoteAudio(remoteStream);
+    notifyVideoSubscribers();
+  };
+
+  const safeCaller = callerUsername.toLowerCase().trim();
+  const safeReceiver = receiverUsername.toLowerCase().trim();
+  const callId = `vcall_${safeCaller}_${safeReceiver}_${Date.now()}`;
+  activeCallId = callId;
+
+  const callDocRef = doc(db, 'calls', callId);
+  const callerCandidatesCol = collection(callDocRef, 'callerCandidates');
+  const receiverCandidatesCol = collection(callDocRef, 'receiverCandidates');
+
+  peerConnection.onicecandidate = (event) => {
+    if (event.candidate) {
+      addDoc(callerCandidatesCol, event.candidate.toJSON()).catch((e) =>
+        console.warn('[Call] Error saving caller candidate:', e)
+      );
+    }
+  };
+
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offer);
+
+  await setDoc(callDocRef, {
+    callId,
+    caller: safeCaller,
+    receiver: safeReceiver,
+    callerDisplay: callerUsername,
+    receiverDisplay: receiverUsername,
+    status: 'ringing',
+    isVideo: true,
+    offer: { type: offer.type, sdp: offer.sdp },
+    createdAt: Date.now(),
+  });
+
+  playOutgoingTone();
+
+  onStateChange({
+    callId,
+    caller: callerUsername,
+    receiver: receiverUsername,
+    isIncoming: false,
+    status: 'ringing',
+    isVideo: true,
+  });
+
+  unsubscribeCallDoc = onSnapshot(callDocRef, async (snapshot) => {
+    const data = snapshot.data();
+    if (!data) return;
+
+    if (data.status === 'declined' || data.status === 'ended') {
+      stopRingtone();
+      onStateChange({ callId, caller: callerUsername, receiver: receiverUsername, isIncoming: false, status: data.status, isVideo: true });
+      cleanupCallResources();
+      return;
+    }
+
+    if (!peerConnection.currentRemoteDescription && data.answer) {
+      stopRingtone();
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+      await flushPendingCandidates(peerConnection);
+      onStateChange({ callId, caller: callerUsername, receiver: receiverUsername, isIncoming: false, status: 'connected', startTime: Date.now(), isVideo: true });
+    }
+  });
+
+  unsubscribeCandidates = onSnapshot(receiverCandidatesCol, (snapshot) => {
+    snapshot.docChanges().forEach(async (change) => {
+      if (change.type === 'added') {
+        await safeAddIceCandidate(peerConnection, change.doc.data() as RTCIceCandidateInit);
+      }
+    });
+  });
+
+  return callId;
+}
+
+// ─── answerVideoCall ──────────────────────────────────────────────────────────
+export async function answerVideoCall(
+  callId: string,
+  onStateChange: CallListener,
+  localEl?: HTMLVideoElement | null,
+  remoteEl?: HTMLVideoElement | null
+): Promise<void> {
+  if (localEl !== undefined) localVideoElement = localEl;
+  if (remoteEl !== undefined) remoteVideoElement = remoteEl;
+  stopRingtone();
+  pendingIceCandidates = [];
+
+  const callDocRef = doc(db, 'calls', callId);
+  const callSnapshot = await getDoc(callDocRef);
+  if (!callSnapshot.exists()) throw new Error('Call does not exist or was ended.');
+
+  const callData = callSnapshot.data();
+  activeCallId = callId;
+
+  const localStream = await getLocalStream(true);
+  currentLocalStream = localStream;
+
+  if (localVideoElement) {
+    localVideoElement.muted = true; // Local preview — always muted
+    localVideoElement.srcObject = localStream;
+    localVideoElement.play().catch(() => {});
+  }
+  notifyVideoSubscribers();
+
+  const peerConnection = createPeerConnection();
+  currentPeerConnection = peerConnection;
+
+  localStream.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
+
+  peerConnection.ontrack = (event) => {
+    const [remoteStream] = event.streams;
+    currentRemoteStream = remoteStream;
+
+    if (remoteVideoElement) {
+      // MUTED: prevents double-audio echo (audio comes from hidden <audio> element only)
+      remoteVideoElement.muted = true;
+      remoteVideoElement.srcObject = remoteStream;
+      remoteVideoElement.play().catch(() => {});
+    }
+
+    playRemoteAudio(remoteStream);
+    notifyVideoSubscribers();
+  };
+
+  const callerCandidatesCol = collection(callDocRef, 'callerCandidates');
+  const receiverCandidatesCol = collection(callDocRef, 'receiverCandidates');
+
+  peerConnection.onicecandidate = (event) => {
+    if (event.candidate) {
+      addDoc(receiverCandidatesCol, event.candidate.toJSON()).catch((e) =>
+        console.warn('[Call] Error adding answer candidate:', e)
+      );
+    }
+  };
+
+  // Remote description MUST be set before adding ICE candidates
+  await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.offer));
+  await flushPendingCandidates(peerConnection);
+
+  const answerDescription = await peerConnection.createAnswer();
+  await peerConnection.setLocalDescription(answerDescription);
+
+  await updateDoc(callDocRef, {
+    answer: { type: answerDescription.type, sdp: answerDescription.sdp },
+    status: 'connected',
+    connectedAt: Date.now(),
+    isVideo: true,
+  });
+
+  onStateChange({
+    callId,
+    caller: callData.callerDisplay || callData.caller,
+    receiver: callData.receiverDisplay || callData.receiver,
+    isIncoming: true,
+    status: 'connected',
+    startTime: Date.now(),
+    isVideo: true,
+  });
+
+  unsubscribeCallDoc = onSnapshot(callDocRef, (snapshot) => {
+    const data = snapshot.data();
+    if (!data) return;
+    if (data.status === 'ended' || data.status === 'declined') {
+      onStateChange({ callId, caller: data.caller, receiver: data.receiver, isIncoming: true, status: data.status, isVideo: true });
+      cleanupCallResources();
+    }
+  });
+
+  unsubscribeCandidates = onSnapshot(callerCandidatesCol, (snapshot) => {
+    snapshot.docChanges().forEach(async (change) => {
+      if (change.type === 'added') {
+        await safeAddIceCandidate(peerConnection, change.doc.data() as RTCIceCandidateInit);
+      }
+    });
+  });
+}
+
+// ─── cleanupCallResources ─────────────────────────────────────────────────────
 function cleanupCallResources(): void {
   stopRingtone();
+  pendingIceCandidates = [];
 
-  if (unsubscribeCallDoc) {
-    unsubscribeCallDoc();
-    unsubscribeCallDoc = null;
-  }
-  if (unsubscribeCandidates) {
-    unsubscribeCandidates();
-    unsubscribeCandidates = null;
-  }
+  if (unsubscribeCallDoc) { unsubscribeCallDoc(); unsubscribeCallDoc = null; }
+  if (unsubscribeCandidates) { unsubscribeCandidates(); unsubscribeCandidates = null; }
 
   if (currentLocalStream) {
     currentLocalStream.getTracks().forEach((t) => t.stop());
@@ -463,16 +785,24 @@ function cleanupCallResources(): void {
     currentPeerConnection = null;
   }
 
+  // Clear audio element
   if (remoteAudioElement) {
+    remoteAudioElement.pause();
     remoteAudioElement.srcObject = null;
   }
 
+  // Clear video elements
+  if (localVideoElement) localVideoElement.srcObject = null;
+  if (remoteVideoElement) remoteVideoElement.srcObject = null;
+
+  currentRemoteStream = null;
+  notifyVideoSubscribers();
   activeCallId = null;
+
+  console.log('[Call] Resources cleaned up');
 }
 
-/**
- * Real-time subscription to detect incoming calls for a logged-in user.
- */
+// ─── subscribeToIncomingCalls ─────────────────────────────────────────────────
 export function subscribeToIncomingCalls(
   username: string,
   onIncomingCall: IncomingCallListener
@@ -481,8 +811,6 @@ export function subscribeToIncomingCalls(
 
   const safeUsername = username.toLowerCase().trim();
   const callsRef = collection(db, 'calls');
-  // Single-field query so Firestore does not require a composite index.
-  // Status and freshness are filtered on the client.
   const q = query(callsRef, where('receiver', '==', safeUsername));
 
   const seenRingingIds = new Set<string>();
@@ -522,383 +850,7 @@ export function subscribeToIncomingCalls(
       });
     },
     (error) => {
-      console.error('Incoming call subscription failed:', error.message);
+      console.error('[Call] Incoming call subscription failed:', error.message);
     }
   );
 }
-
-
-// ============================================================
-// VIDEO CALL EXTENSIONS
-// ============================================================
-
-let currentVideoStream: MediaStream | null = null;
-let currentRemoteStream: MediaStream | null = null;
-let remoteVideoElement: HTMLVideoElement | null = null;
-let localVideoElement: HTMLVideoElement | null = null;
-const streamSubscribers = new Set<(local: MediaStream | null, remote: MediaStream | null) => void>();
-
-function notifyStreamSubscribers(): void {
-  streamSubscribers.forEach((fn) => {
-    try {
-      fn(currentVideoStream, currentRemoteStream);
-    } catch (e) {
-      console.warn('Stream subscriber error:', e);
-    }
-  });
-}
-
-/**
- * Subscribes to live local and remote MediaStreams for video calls.
- * Fires immediately with the current state.
- */
-export function subscribeToVideoStreams(
-  listener: (local: MediaStream | null, remote: MediaStream | null) => void
-): () => void {
-  streamSubscribers.add(listener);
-  try {
-    listener(currentVideoStream, currentRemoteStream);
-  } catch {}
-  return () => {
-    streamSubscribers.delete(listener);
-  };
-}
-
-/**
- * Attaches the current active local/remote streams to provided DOM <video> elements.
- */
-export function attachVideoElements(
-  localEl?: HTMLVideoElement | null,
-  remoteEl?: HTMLVideoElement | null
-): void {
-  if (localEl !== undefined) {
-    localVideoElement = localEl;
-    if (localEl && currentVideoStream) {
-      localEl.srcObject = currentVideoStream;
-      localEl.muted = true;
-      localEl.play().catch(() => {});
-    }
-  }
-  if (remoteEl !== undefined) {
-    remoteVideoElement = remoteEl;
-    if (remoteEl && currentRemoteStream) {
-      remoteEl.srcObject = currentRemoteStream;
-      remoteEl.play().catch(() => {});
-    }
-  }
-}
-
-/**
- * Exposes the current local camera/mic stream so React components
- * can attach it to a <video> element for self-preview.
- */
-export function getLocalVideoStream(): MediaStream | null {
-  return currentVideoStream;
-}
-
-export function getRemoteVideoStream(): MediaStream | null {
-  return currentRemoteStream;
-}
-
-/**
- * Toggles the local camera on/off during a connected video call.
- */
-export function toggleLocalVideo(isCameraOff: boolean): void {
-  if (currentVideoStream) {
-    currentVideoStream.getVideoTracks().forEach((track) => {
-      track.enabled = !isCameraOff;
-    });
-  }
-  // Also toggle for audio-only stream used in voice paths
-  if (currentLocalStream) {
-    currentLocalStream.getVideoTracks().forEach((track) => {
-      track.enabled = !isCameraOff;
-    });
-  }
-}
-
-/**
- * Initiates an outgoing WebRTC VIDEO + audio call.
- */
-export async function startVideoCall(
-  callerUsername: string,
-  receiverUsername: string,
-  onStateChange: CallListener,
-  localVideoEl?: HTMLVideoElement | null,
-  remoteVideoEl?: HTMLVideoElement | null
-): Promise<string> {
-  // Clean up stale calls
-  await endVoiceCall();
-
-  // Capture camera + mic
-  let localStream: MediaStream;
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-    });
-  } catch (err) {
-    console.error('Failed to access camera/mic:', err);
-    throw new Error('Camera and microphone permission required for a video call.');
-  }
-
-  currentVideoStream = localStream;
-  currentLocalStream = localStream;
-
-  if (localVideoEl) {
-    localVideoElement = localVideoEl;
-    localVideoEl.srcObject = localStream;
-    localVideoEl.muted = true;
-    localVideoEl.play().catch(() => {});
-  }
-  if (remoteVideoEl) {
-    remoteVideoElement = remoteVideoEl;
-  }
-  notifyStreamSubscribers();
-
-  const peerConnection = new RTCPeerConnection(ICE_SERVERS);
-  currentPeerConnection = peerConnection;
-
-  localStream.getTracks().forEach((track) => {
-    peerConnection.addTrack(track, localStream);
-  });
-
-  // Play remote video when stream arrives
-  peerConnection.ontrack = (event) => {
-    const [remoteStream] = event.streams;
-    currentRemoteStream = remoteStream;
-    notifyStreamSubscribers();
-    if (remoteVideoElement) {
-      remoteVideoElement.srcObject = remoteStream;
-      remoteVideoElement.play().catch(() => {});
-    }
-    // Also feed audio to hidden audio element
-    const audioEl = getRemoteAudioElement();
-    audioEl.srcObject = remoteStream;
-    audioEl.play().catch(() => {});
-  };
-
-  const safeCaller = callerUsername.toLowerCase().trim();
-  const safeReceiver = receiverUsername.toLowerCase().trim();
-  const callId = `vcall_${safeCaller}_${safeReceiver}_${Date.now()}`;
-  activeCallId = callId;
-
-  const callDocRef = doc(db, 'calls', callId);
-  const callerCandidatesCol = collection(callDocRef, 'callerCandidates');
-  const receiverCandidatesCol = collection(callDocRef, 'receiverCandidates');
-
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate) {
-      addDoc(callerCandidatesCol, event.candidate.toJSON()).catch(() => {});
-    }
-  };
-
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
-
-  await setDoc(callDocRef, {
-    callId,
-    caller: safeCaller,
-    receiver: safeReceiver,
-    callerDisplay: callerUsername,
-    receiverDisplay: receiverUsername,
-    status: 'ringing',
-    isVideo: true,
-    offer: { type: offer.type, sdp: offer.sdp },
-    createdAt: Date.now(),
-  });
-
-  playOutgoingTone();
-
-  onStateChange({
-    callId,
-    caller: callerUsername,
-    receiver: receiverUsername,
-    isIncoming: false,
-    status: 'ringing',
-    isVideo: true,
-  });
-
-  unsubscribeCallDoc = onSnapshot(callDocRef, async (snapshot) => {
-    const data = snapshot.data();
-    if (!data) return;
-
-    if (data.status === 'declined' || data.status === 'ended') {
-      stopRingtone();
-      onStateChange({
-        callId,
-        caller: callerUsername,
-        receiver: receiverUsername,
-        isIncoming: false,
-        status: data.status,
-        isVideo: true,
-      });
-      cleanupVideoResources();
-      return;
-    }
-
-    if (!peerConnection.currentRemoteDescription && data.answer) {
-      stopRingtone();
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-      onStateChange({
-        callId,
-        caller: callerUsername,
-        receiver: receiverUsername,
-        isIncoming: false,
-        status: 'connected',
-        startTime: Date.now(),
-        isVideo: true,
-      });
-    }
-  });
-
-  unsubscribeCandidates = onSnapshot(receiverCandidatesCol, (snapshot) => {
-    snapshot.docChanges().forEach(async (change) => {
-      if (change.type === 'added') {
-        try {
-          await peerConnection.addIceCandidate(new RTCIceCandidate(change.doc.data()));
-        } catch {}
-      }
-    });
-  });
-
-  return callId;
-}
-
-/**
- * Answers an incoming video call and attaches local/remote streams to provided video elements.
- */
-export async function answerVideoCall(
-  callId: string,
-  onStateChange: CallListener,
-  localVideoEl?: HTMLVideoElement | null,
-  remoteVideoEl?: HTMLVideoElement | null
-): Promise<void> {
-  stopRingtone();
-
-  const callDocRef = doc(db, 'calls', callId);
-  const callSnapshot = await getDoc(callDocRef);
-  if (!callSnapshot.exists()) throw new Error('Call does not exist or was ended.');
-
-  const callData = callSnapshot.data();
-  activeCallId = callId;
-
-  let localStream: MediaStream;
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-    });
-  } catch (err) {
-    throw new Error('Camera and microphone permission required to answer video call.');
-  }
-
-  currentVideoStream = localStream;
-  currentLocalStream = localStream;
-
-  if (localVideoEl) {
-    localVideoElement = localVideoEl;
-    localVideoEl.srcObject = localStream;
-    localVideoEl.muted = true;
-    localVideoEl.play().catch(() => {});
-  }
-  if (remoteVideoEl) {
-    remoteVideoElement = remoteVideoEl;
-  }
-  notifyStreamSubscribers();
-
-  const peerConnection = new RTCPeerConnection(ICE_SERVERS);
-  currentPeerConnection = peerConnection;
-
-  localStream.getTracks().forEach((track) => {
-    peerConnection.addTrack(track, localStream);
-  });
-
-  peerConnection.ontrack = (event) => {
-    const [remoteStream] = event.streams;
-    currentRemoteStream = remoteStream;
-    notifyStreamSubscribers();
-    if (remoteVideoElement) {
-      remoteVideoElement.srcObject = remoteStream;
-      remoteVideoElement.play().catch(() => {});
-    }
-    const audioEl = getRemoteAudioElement();
-    audioEl.srcObject = remoteStream;
-    audioEl.play().catch(() => {});
-  };
-
-  const callerCandidatesCol = collection(callDocRef, 'callerCandidates');
-  const receiverCandidatesCol = collection(callDocRef, 'receiverCandidates');
-
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate) {
-      addDoc(receiverCandidatesCol, event.candidate.toJSON()).catch(() => {});
-    }
-  };
-
-  await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.offer));
-  const answerDescription = await peerConnection.createAnswer();
-  await peerConnection.setLocalDescription(answerDescription);
-
-  await updateDoc(callDocRef, {
-    answer: { type: answerDescription.type, sdp: answerDescription.sdp },
-    status: 'connected',
-    connectedAt: Date.now(),
-  });
-
-  onStateChange({
-    callId,
-    caller: callData.callerDisplay || callData.caller,
-    receiver: callData.receiverDisplay || callData.receiver,
-    isIncoming: true,
-    status: 'connected',
-    startTime: Date.now(),
-    isVideo: true,
-  });
-
-  unsubscribeCallDoc = onSnapshot(callDocRef, (snapshot) => {
-    const data = snapshot.data();
-    if (!data) return;
-    if (data.status === 'ended' || data.status === 'declined') {
-      onStateChange({
-        callId,
-        caller: data.caller,
-        receiver: data.receiver,
-        isIncoming: true,
-        status: data.status,
-        isVideo: true,
-      });
-      cleanupVideoResources();
-    }
-  });
-
-  unsubscribeCandidates = onSnapshot(callerCandidatesCol, (snapshot) => {
-    snapshot.docChanges().forEach(async (change) => {
-      if (change.type === 'added') {
-        try {
-          await peerConnection.addIceCandidate(new RTCIceCandidate(change.doc.data()));
-        } catch {}
-      }
-    });
-  });
-}
-
-function cleanupVideoResources(): void {
-  if (currentVideoStream) {
-    currentVideoStream.getTracks().forEach((t) => t.stop());
-    currentVideoStream = null;
-  }
-  currentRemoteStream = null;
-  notifyStreamSubscribers();
-  if (localVideoElement) {
-    localVideoElement.srcObject = null;
-    localVideoElement = null;
-  }
-  if (remoteVideoElement) {
-    remoteVideoElement.srcObject = null;
-    remoteVideoElement = null;
-  }
-  cleanupCallResources();
-}
-
-

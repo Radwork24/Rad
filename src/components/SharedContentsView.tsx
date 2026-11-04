@@ -6,14 +6,8 @@ import {
   SearchIcon,
   MessageSquareIcon,
   UserPlusIcon,
-  BookOpenIcon,
-  FolderOpenIcon,
-  FilePdfIcon,
-  FilePptIcon,
-  EyeIcon,
 } from './Icons';
 import type { ChatSession } from '../types/chat';
-import type { NotebookItem, NotebookFile } from '../types/notebook';
 import type { UserProfile } from '../services/userService';
 import { LoadingHint, SkeletonList } from './LoadingState';
 
@@ -23,13 +17,10 @@ interface SharedContentsViewProps {
   isRightSidebarOpen?: boolean;
   onToggleRightSidebar?: () => void;
   chats: ChatSession[];
-  notebooks?: NotebookItem[];
   allUsers: UserProfile[];
   currentUsername: string;
   onSelectChat: (chatId: string) => void;
   onInviteUser: (targetUsername: string, specificChatId?: string) => void;
-  onOpenNotebook?: (notebookId?: string) => void;
-  onOpenDocumentViewer?: (file: NotebookFile) => void;
   pendingInviteUsernames?: string[];
   isLoading?: boolean;
 }
@@ -50,28 +41,19 @@ export const SharedContentsView: React.FC<SharedContentsViewProps> = ({
   isRightSidebarOpen = true,
   onToggleRightSidebar,
   chats,
-  notebooks = [],
   allUsers,
   currentUsername,
   onSelectChat,
   onInviteUser,
-  onOpenNotebook,
-  onOpenDocumentViewer,
   pendingInviteUsernames = [],
   isLoading = false,
 }) => {
-  const [mainTab, setMainTab] = useState<'chats' | 'notebooks'>('chats');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'invited' | 'available'>('all');
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [selectedUserToShare, setSelectedUserToShare] = useState<string | null>(null);
 
   const normalizedCurrent = (currentUsername || '').toLowerCase().trim();
-
-  // Find all shared notebooks (either shared to currentUser or shared by currentUser with others)
-  const sharedNotebooksList = notebooks.filter(
-    (nb) => nb.isShared || (nb.sharedWith && nb.sharedWith.length > 0)
-  );
 
   // 1. Find all shared chats (chats with multiple participants or where currentUser invited someone)
   const sharedChatsList = chats.filter((c) => {
@@ -145,17 +127,6 @@ export const SharedContentsView: React.FC<SharedContentsViewProps> = ({
     );
   });
 
-  const filteredSharedNotebooks = sharedNotebooksList.filter((nb) => {
-    const q = searchQuery.toLowerCase().trim();
-    if (!q) return true;
-    return (
-      nb.title.toLowerCase().includes(q) ||
-      (nb.description && nb.description.toLowerCase().includes(q)) ||
-      (nb.sharedBy && nb.sharedBy.toLowerCase().includes(q)) ||
-      (nb.files && nb.files.some((f) => f.name.toLowerCase().includes(q)))
-    );
-  });
-
 
   return (
     <main style={styles.container}>
@@ -209,88 +180,61 @@ export const SharedContentsView: React.FC<SharedContentsViewProps> = ({
             </p>
           </div>
 
-          {/* Main Tab Switcher: Shared Chats vs Shared Notebooks */}
-          <div style={styles.mainTabSwitcher}>
-            <button
-              onClick={() => {
-                setMainTab('chats');
-                setSearchQuery('');
-              }}
-              style={mainTab === 'chats' ? styles.mainTabActive : styles.mainTabInactive}
-            >
-              <MessageSquareIcon size={15} />
-              <span>Shared Chats ({sharedChatsList.length})</span>
-            </button>
+          {/* Controls Bar */}
+          <div style={styles.controlsBar}>
+            {/* Search Input */}
+            <div style={styles.searchBox}>
+              <SearchIcon size={15} />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search collaborator name, chats..."
+                style={styles.searchInput}
+              />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery('')} style={styles.clearBtn}>
+                  ✕
+                </button>
+              )}
+            </div>
 
+            {/* Filter Pills */}
+            <div style={styles.filterPillsGroup}>
+              {(['all', 'invited', 'available'] as const).map((ft) => {
+                const isSelected = filterType === ft;
+                const labels: Record<string, string> = {
+                  all: 'All Users',
+                  invited: `Invited (${invitedCollaborators.length})`,
+                  available: `Available to Invite (${availableUsers.length})`,
+                };
+                return (
+                  <button
+                    key={ft}
+                    onClick={() => setFilterType(ft)}
+                    style={{
+                      ...styles.filterPill,
+                      backgroundColor: isSelected ? '#2d2c28' : 'transparent',
+                      color: isSelected ? '#f5f2eb' : '#948f86',
+                      borderColor: isSelected ? '#3f3d37' : '#2b2a26',
+                    }}
+                  >
+                    {labels[ft]}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Invite Button */}
             <button
-              onClick={() => {
-                setMainTab('notebooks');
-                setSearchQuery('');
-              }}
-              style={mainTab === 'notebooks' ? styles.mainTabActive : styles.mainTabInactive}
+              onClick={() => setShowInviteModal(true)}
+              style={styles.inviteUserBtn}
+              title="Invite another user from Firebase to chat"
             >
-              <BookOpenIcon size={15} />
-              <span>Shared Notebooks & Docs ({sharedNotebooksList.length})</span>
+              <UserPlusIcon size={15} />
+              <span>Invite Collaborator</span>
             </button>
           </div>
-
-          {mainTab === 'chats' ? (
-            <>
-              {/* Controls Bar */}
-              <div style={styles.controlsBar}>
-                {/* Search Input */}
-                <div style={styles.searchBox}>
-                  <SearchIcon size={15} />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search collaborator name, chats..."
-                    style={styles.searchInput}
-                  />
-                  {searchQuery && (
-                    <button onClick={() => setSearchQuery('')} style={styles.clearBtn}>
-                      ✕
-                    </button>
-                  )}
-                </div>
-
-                {/* Filter Pills */}
-                <div style={styles.filterPillsGroup}>
-                  {(['all', 'invited', 'available'] as const).map((ft) => {
-                    const isSelected = filterType === ft;
-                    const labels: Record<string, string> = {
-                      all: 'All Users',
-                      invited: `Invited (${invitedCollaborators.length})`,
-                      available: `Available to Invite (${availableUsers.length})`,
-                    };
-                    return (
-                      <button
-                        key={ft}
-                        onClick={() => setFilterType(ft)}
-                        style={{
-                          ...styles.filterPill,
-                          backgroundColor: isSelected ? '#2d2c28' : 'transparent',
-                          color: isSelected ? '#f5f2eb' : '#948f86',
-                          borderColor: isSelected ? '#3f3d37' : '#2b2a26',
-                        }}
-                      >
-                        {labels[ft]}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Invite Button */}
-                <button
-                  onClick={() => setShowInviteModal(true)}
-                  style={styles.inviteUserBtn}
-                  title="Invite another user from Firebase to chat"
-                >
-                  <UserPlusIcon size={15} />
-                  <span>Invite Collaborator</span>
-                </button>
-              </div>
 
           {/* ========================================================
               CARDS GRID: Cards of users with whom I ever invited to chat
@@ -496,182 +440,6 @@ export const SharedContentsView: React.FC<SharedContentsViewProps> = ({
             </>
             )}
           </div>
-          </>
-          ) : (
-            /* ========================================================
-               TAB 2: SHARED NOTEBOOKS & DOCUMENTS GRID
-               ======================================================== */
-            <>
-              {/* Controls Bar for Notebooks */}
-              <div style={styles.controlsBar}>
-                <div style={styles.searchBox}>
-                  <SearchIcon size={15} />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search shared notebooks, documents..."
-                    style={styles.searchInput}
-                  />
-                  {searchQuery && (
-                    <button onClick={() => setSearchQuery('')} style={styles.clearBtn}>
-                      ✕
-                    </button>
-                  )}
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={styles.notebookSummaryPill}>
-                    {sharedNotebooksList.length} shared notebook{sharedNotebooksList.length === 1 ? '' : 's'}
-                  </span>
-                </div>
-              </div>
-
-              {filteredSharedNotebooks.length === 0 ? (
-                <div style={styles.emptySharedNotebooksBox}>
-                  <BookOpenIcon size={40} />
-                  <h3 style={styles.emptySharedTitle}>No Shared Notebooks Yet</h3>
-                  <p style={styles.emptySharedDesc}>
-                    When someone invites you to study a notebook or document, or when you share a notebook from the Notebooks view, it will show up here.
-                  </p>
-                  {onOpenNotebook && (
-                    <button
-                      onClick={() => onOpenNotebook()}
-                      style={styles.goToNotebooksBtn}
-                    >
-                      <FolderOpenIcon size={15} />
-                      <span>Explore Your Notebooks</span>
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <div style={styles.sharedNotebooksGrid}>
-                  {filteredSharedNotebooks.map((nb) => {
-                    const isFromSomeoneElse = nb.isShared;
-                    return (
-                      <div key={nb.id} style={styles.sharedNotebookCard}>
-                        {/* 3D Spine */}
-                        <div
-                          style={{
-                            ...styles.sharedBookSpine,
-                            background: nb.coverColor || '#3b82f6',
-                          }}
-                        />
-
-                        {/* Content Area */}
-                        <div style={styles.sharedNotebookBody}>
-                          {/* Top Row: Shared Tag & Date */}
-                          <div style={styles.sharedNotebookTopRow}>
-                            <div
-                              style={
-                                isFromSomeoneElse
-                                  ? styles.sharedFromBadge
-                                  : styles.sharedWithBadge
-                              }
-                              title={
-                                isFromSomeoneElse
-                                  ? `Shared with you by @${nb.sharedBy}`
-                                  : `Shared by you with friends`
-                              }
-                            >
-                              <span>
-                                👥 {isFromSomeoneElse ? `From @${nb.sharedBy}` : `Shared with ${nb.sharedWith?.join(', ')}`}
-                              </span>
-                            </div>
-
-                            {nb.sharedAt && (
-                              <span style={styles.sharedDateText}>
-                                {new Date(nb.sharedAt).toLocaleDateString([], {
-                                  month: 'short',
-                                  day: 'numeric',
-                                })}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Title & Description */}
-                          <div style={styles.sharedTitleWrapper}>
-                            <h3 style={styles.sharedNbTitle}>{nb.title}</h3>
-                            <p style={styles.sharedNbDesc}>
-                              {nb.description || `Shared study materials and notes for ${nb.title}.`}
-                            </p>
-                          </div>
-
-                          {/* Documents Preview */}
-                          <div style={styles.sharedDocsBox}>
-                            <div style={styles.sharedDocsHeader}>
-                              <span>Documents ({nb.files ? nb.files.length : 0})</span>
-                            </div>
-
-                            {nb.files && nb.files.length > 0 ? (
-                              <div style={styles.sharedDocsList}>
-                                {nb.files.slice(0, 3).map((file) => (
-                                  <div key={file.id} style={styles.sharedDocItem}>
-                                    <div style={styles.sharedDocLeft}>
-                                      {file.type === 'pdf' ? (
-                                        <span style={{ color: '#f87171', display: 'flex' }}>
-                                          <FilePdfIcon size={14} />
-                                        </span>
-                                      ) : (
-                                        <span style={{ color: '#fb923c', display: 'flex' }}>
-                                          <FilePptIcon size={14} />
-                                        </span>
-                                      )}
-                                      <span style={styles.sharedDocName} title={file.name}>
-                                        {file.name}
-                                      </span>
-                                    </div>
-
-                                    {onOpenDocumentViewer && (
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          onOpenDocumentViewer(file);
-                                        }}
-                                        style={styles.sharedDocViewBtn}
-                                        title="View document in floating viewer"
-                                      >
-                                        <EyeIcon size={12} />
-                                        <span>View</span>
-                                      </button>
-                                    )}
-                                  </div>
-                                ))}
-
-                                {nb.files.length > 3 && (
-                                  <span style={styles.moreDocsNotice}>
-                                    +{nb.files.length - 3} more file{nb.files.length - 3 > 1 ? 's' : ''} inside
-                                  </span>
-                                )}
-                              </div>
-                            ) : (
-                              <div style={styles.noFilesInsideNotice}>
-                                No documents uploaded in this notebook yet
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Action Footer */}
-                          <div style={styles.sharedCardFooter}>
-                            {onOpenNotebook && (
-                              <button
-                                onClick={() => onOpenNotebook(nb.id)}
-                                style={styles.openInNotebooksBtn}
-                              >
-                                <FolderOpenIcon size={14} />
-                                <span>Open in Notebooks</span>
-                                <span>→</span>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </>
-          )}
         </div>
       </div>
 
@@ -1552,249 +1320,5 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 14px',
     borderRadius: '8px',
     cursor: 'pointer',
-  },
-
-  /* ========================================================
-     MAIN TAB SWITCHER & SHARED NOTEBOOKS STYLES
-     ======================================================== */
-  mainTabSwitcher: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    marginBottom: '24px',
-    borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-    paddingBottom: '12px',
-  },
-  mainTabActive: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    backgroundColor: 'rgba(217, 119, 87, 0.15)',
-    border: '1px solid var(--accent-terracotta)',
-    color: '#ff9c7d',
-    padding: '8px 16px',
-    borderRadius: '8px',
-    fontSize: '13px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  mainTabInactive: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    color: 'rgba(255, 255, 255, 0.65)',
-    padding: '8px 16px',
-    borderRadius: '8px',
-    fontSize: '13px',
-    fontWeight: 500,
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  notebookSummaryPill: {
-    padding: '6px 12px',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
-    borderRadius: '20px',
-    fontSize: '12px',
-    color: 'rgba(255, 255, 255, 0.7)',
-    fontWeight: 500,
-  },
-  emptySharedNotebooksBox: {
-    padding: '60px 24px',
-    backgroundColor: '#000000',
-    border: '1px solid rgba(255, 255, 255, 0.08)',
-    borderRadius: '14px',
-    textAlign: 'center',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: '12px',
-    color: 'rgba(255, 255, 255, 0.4)',
-  },
-  emptySharedTitle: {
-    fontSize: '18px',
-    fontWeight: 600,
-    color: '#f5f2eb',
-    margin: '4px 0 0 0',
-  },
-  emptySharedDesc: {
-    fontSize: '13px',
-    color: '#948f86',
-    maxWidth: '460px',
-    lineHeight: 1.5,
-    margin: 0,
-  },
-  goToNotebooksBtn: {
-    marginTop: '8px',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    backgroundColor: 'var(--accent-terracotta)',
-    border: 'none',
-    color: '#ffffff',
-    fontSize: '13px',
-    fontWeight: 600,
-    padding: '9px 18px',
-    borderRadius: '8px',
-    cursor: 'pointer',
-  },
-  sharedNotebooksGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-    gap: '20px',
-  },
-  sharedNotebookCard: {
-    backgroundColor: '#000000',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
-    borderRadius: '12px',
-    display: 'flex',
-    overflow: 'hidden',
-    boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
-    transition: 'all 0.2s ease',
-  },
-  sharedBookSpine: {
-    width: '10px',
-    flexShrink: 0,
-    boxShadow: 'inset -2px 0 4px rgba(0, 0, 0, 0.45)',
-  },
-  sharedNotebookBody: {
-    flex: 1,
-    padding: '16px',
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'space-between',
-    gap: '14px',
-  },
-  sharedNotebookTopRow: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  sharedFromBadge: {
-    padding: '3px 8px',
-    borderRadius: '10px',
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    color: '#34d399',
-    fontSize: '11px',
-    fontWeight: 600,
-  },
-  sharedWithBadge: {
-    padding: '3px 8px',
-    borderRadius: '10px',
-    backgroundColor: 'rgba(59, 130, 246, 0.15)',
-    color: '#60a5fa',
-    fontSize: '11px',
-    fontWeight: 600,
-  },
-  sharedDateText: {
-    fontSize: '11px',
-    color: '#7a756c',
-  },
-  sharedTitleWrapper: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '4px',
-  },
-  sharedNbTitle: {
-    fontSize: '16px',
-    fontWeight: 600,
-    color: '#f7f4ed',
-    margin: 0,
-  },
-  sharedNbDesc: {
-    fontSize: '12px',
-    color: '#9c978e',
-    margin: 0,
-    lineHeight: 1.45,
-    display: '-webkit-box',
-    WebkitLineClamp: 2,
-    WebkitBoxOrient: 'vertical',
-    overflow: 'hidden',
-  },
-  sharedDocsBox: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    border: '1px solid rgba(255, 255, 255, 0.06)',
-    borderRadius: '8px',
-    padding: '10px 12px',
-  },
-  sharedDocsHeader: {
-    fontSize: '11px',
-    fontWeight: 600,
-    color: '#a39e94',
-    textTransform: 'uppercase',
-    letterSpacing: '0.04em',
-    marginBottom: '8px',
-  },
-  sharedDocsList: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px',
-  },
-  sharedDocItem: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: '8px',
-  },
-  sharedDocLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    minWidth: 0,
-  },
-  sharedDocName: {
-    fontSize: '12px',
-    color: '#e6e2da',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    maxWidth: '170px',
-  },
-  sharedDocViewBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
-    color: 'rgba(255, 255, 255, 0.8)',
-    fontSize: '10.5px',
-    fontWeight: 500,
-    padding: '3px 7px',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    flexShrink: 0,
-  },
-  moreDocsNotice: {
-    fontSize: '10.5px',
-    color: '#807b72',
-    marginTop: '2px',
-  },
-  noFilesInsideNotice: {
-    fontSize: '11.5px',
-    color: '#706c64',
-    fontStyle: 'italic',
-  },
-  sharedCardFooter: {
-    borderTop: '1px solid rgba(255, 255, 255, 0.06)',
-    paddingTop: '10px',
-  },
-  openInNotebooksBtn: {
-    width: '100%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '6px',
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
-    color: '#f5f2eb',
-    fontSize: '12.5px',
-    fontWeight: 500,
-    padding: '8px 12px',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
   },
 };

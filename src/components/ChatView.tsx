@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { compressImageDataUrl } from '../utils/imageUtils';
+import { extractTextFromFile, isSupportedDocument, type ExtractedFile } from '../services/fileExtractService';
 import type { ChatSession } from '../types/chat';
 import type { UserProfile } from '../services/userService';
 import { MarkdownView } from './MarkdownView';
@@ -17,55 +18,6 @@ import {
   UserPlusIcon,
 } from './Icons';
 import type { AttachedPage } from '../types/notebook';
-
-// ── Live elapsed-time counter shown while Rad is generating ─────────────────
-function ThinkingTimer() {
-  const [elapsed, setElapsed] = useState(0);
-  const startRef = useRef(Date.now());
-  const rafRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    startRef.current = Date.now();
-    const tick = () => {
-      setElapsed(Date.now() - startRef.current);
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, []);
-
-  const seconds = (elapsed / 1000).toFixed(1);
-  // SVG spinner arc — progresses every second, loops every 3s
-  const cycle = (elapsed % 3000) / 3000;
-  const circumference = 2 * Math.PI * 9; // r=9
-  const dashOffset = circumference * (1 - cycle);
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#9c978e', fontSize: '13.5px' }}>
-      {/* Spinning arc ring */}
-      <svg width="22" height="22" viewBox="0 0 22 22" style={{ flexShrink: 0 }}>
-        {/* Track */}
-        <circle cx="11" cy="11" r="9" fill="none" stroke="#36342e" strokeWidth="2" />
-        {/* Animated arc */}
-        <circle
-          cx="11" cy="11" r="9"
-          fill="none"
-          stroke="var(--accent-terracotta, #c97d4e)"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          strokeDashoffset={dashOffset}
-          style={{ transform: 'rotate(-90deg)', transformOrigin: '11px 11px', transition: 'stroke-dashoffset 0.1s linear' }}
-        />
-      </svg>
-      {/* Timer digits */}
-      <span style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '0.02em' }}>
-        <span style={{ color: 'var(--accent-terracotta, #c97d4e)', fontWeight: 600 }}>{seconds}s</span>
-        <span style={{ marginLeft: '6px', fontSize: '12px' }}>generating…</span>
-      </span>
-    </div>
-  );
-}
 
 interface ChatViewProps {
   chat: ChatSession;
@@ -89,10 +41,26 @@ export interface AttachedImagePreview {
   name: string;
   dataUrl: string;
   size: number;
-  isPdf?: boolean;
 }
 
+const USER_COLORS = [
+  '#ec4899', // Pink
+  '#10b981', // Emerald
+  '#3b82f6', // Blue
+  '#f59e0b', // Amber
+  '#8b5cf6', // Violet
+  '#d97757', // Terracotta
+  '#06b6d4', // Cyan
+];
 
+const getUserColor = (name: string) => {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const idx = Math.abs(hash) % USER_COLORS.length;
+  return USER_COLORS[idx];
+};
 
 export const ChatView: React.FC<ChatViewProps> = ({
   chat,
@@ -116,6 +84,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [previewModalImage, setPreviewModalImage] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
+  const [attachedDocuments, setAttachedDocuments] = useState<ExtractedFile[]>([]);
+  const [isExtractingFile, setIsExtractingFile] = useState(false);
   const recognitionRef = useRef<any>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -123,6 +93,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const stickToBottomRef = useRef(true);
+  const isSubmittingRef = useRef(false);
 
   const lastMsg = chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : null;
   const isAwaitingAi =
@@ -226,82 +197,68 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  // Process image & PDF files and add them to preview tray
+  // Process files: images → preview tray; documents → text extraction
   const processImageFiles = async (files: FileList | File[]) => {
-    console.log('📸 [Rad ChatView] Processing files count:', files.length);
+    console.log('📸 [Rad ChatView] Processing image files count:', files.length);
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-      const isImage = file.type.startsWith('image/');
 
-      if (!isImage && !isPdf) {
-        console.warn('⚠️ [Rad ChatView] Skipping non-image/non-pdf file:', file.name, file.type);
+      // ── Documents (DOCX / PPTX / XLSX / CSV / TXT / code / JSON) ──
+      if (isSupportedDocument(file)) {
+        console.log(`📄 [Rad ChatView] Extracting document: "${file.name}" (${file.type}, ${Math.round(file.size / 1024)} KB)`);
+        setIsExtractingFile(true);
+        const extracted = await extractTextFromFile(file);
+        setIsExtractingFile(false);
+        setAttachedDocuments((prev) => [...prev, extracted]);
+        console.log(`✅ [Rad ChatView] Document extracted: "${file.name}" — ${extracted.charCount} chars${extracted.truncated ? ' (truncated)' : ''}`);
         continue;
       }
 
-      if (isPdf) {
-        console.log(`📄 [Rad ChatView] Reading PDF file: "${file.name}" (${Math.round(file.size / 1024)} KB)`);
-        const reader = new FileReader();
-        reader.onload = (loadEvent) => {
-          const rawDataUrl = loadEvent.target?.result as string;
-          if (rawDataUrl) {
-            const pdfItem: AttachedImagePreview = {
-              id: 'pdf_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-              name: file.name,
-              dataUrl: rawDataUrl,
-              size: file.size,
-              isPdf: true,
-            };
-            setPastedImages((prev) => [...prev, pdfItem]);
-            console.log('✅ [Rad ChatView] Attached PDF added to preview tray:', pdfItem.id, pdfItem.name);
-          }
-        };
-        reader.readAsDataURL(file);
-      } else {
-        console.log(`📸 [Rad ChatView] Reading image file: "${file.name}" (${file.type}, ${Math.round(file.size / 1024)} KB)`);
-        const reader = new FileReader();
-        reader.onload = async (loadEvent) => {
-          const rawDataUrl = loadEvent.target?.result as string;
-          if (rawDataUrl) {
-            try {
-              const compressedDataUrl = await compressImageDataUrl(rawDataUrl);
-              const imageItem: AttachedImagePreview = {
-                id: 'img_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-                name: file.name && file.name !== 'image.png' ? file.name : `Pasted Image`,
-                dataUrl: compressedDataUrl,
-                size: compressedDataUrl.length,
-                isPdf: false,
-              };
-              setPastedImages((prev) => [...prev, imageItem]);
-              console.log('✅ [Rad ChatView] Attached image added to preview tray:', imageItem.id, imageItem.name);
-            } catch (compErr) {
-              console.error('❌ [Rad ChatView] Compression error:', compErr);
-            }
-          }
-        };
-        reader.readAsDataURL(file);
+      // ── Images ──
+      if (!file.type.startsWith('image/')) {
+        console.warn('⚠️ [Rad ChatView] Skipping non-image file:', file.name, file.type);
+        continue;
       }
+      console.log(`📸 [Rad ChatView] Reading image file: "${file.name}" (${file.type}, ${Math.round(file.size / 1024)} KB)`);
+
+      const reader = new FileReader();
+      reader.onload = async (loadEvent) => {
+        const rawDataUrl = loadEvent.target?.result as string;
+        if (rawDataUrl) {
+          try {
+            const compressedDataUrl = await compressImageDataUrl(rawDataUrl);
+            const imageItem: AttachedImagePreview = {
+              id: 'img_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+              name: file.name && file.name !== 'image.png' ? file.name : `Pasted Image`,
+              dataUrl: compressedDataUrl,
+              size: compressedDataUrl.length,
+            };
+            setPastedImages((prev) => [...prev, imageItem]);
+            console.log('✅ [Rad ChatView] Attached image added to preview tray:', imageItem.id, imageItem.name);
+          } catch (compErr) {
+            console.error('❌ [Rad ChatView] Compression error:', compErr);
+          }
+        }
+      };
+      reader.readAsDataURL(file);
     }
   };
 
-  // Paste handler: allows pasting screenshots, images, or PDFs directly into input bar
+  // Paste handler: allows pasting screenshots or copied images directly into input bar
   const handlePaste = (e: React.ClipboardEvent) => {
     console.log('📋 [Rad ChatView] Paste event captured on input bar');
     const files: File[] = [];
 
     if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
       for (let i = 0; i < e.clipboardData.files.length; i++) {
-        const file = e.clipboardData.files[i];
-        if (file.type.startsWith('image/') || file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-          files.push(file);
-        }
+        files.push(e.clipboardData.files[i]);
       }
     }
 
     if (files.length === 0 && e.clipboardData?.items) {
       for (let i = 0; i < e.clipboardData.items.length; i++) {
         const item = e.clipboardData.items[i];
-        if (item.type.indexOf('image') !== -1 || item.type.indexOf('pdf') !== -1) {
+        if (item.type.indexOf('image') !== -1) {
           const file = item.getAsFile();
           if (file) files.push(file);
         }
@@ -310,7 +267,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
     if (files.length > 0) {
       e.preventDefault();
-      console.log('📋 [Rad ChatView] Found', files.length, 'pasted file(s) in clipboard');
+      console.log('📋 [Rad ChatView] Found', files.length, 'pasted image(s) in clipboard');
       processImageFiles(files);
     }
   };
@@ -328,24 +285,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
       const files: File[] = [];
       if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
         for (let i = 0; i < e.clipboardData.files.length; i++) {
-          const file = e.clipboardData.files[i];
-          if (file.type.startsWith('image/') || file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-            files.push(file);
-          }
+          if (e.clipboardData.files[i].type.startsWith('image/')) files.push(e.clipboardData.files[i]);
         }
       }
       if (files.length === 0 && e.clipboardData?.items) {
         for (let i = 0; i < e.clipboardData.items.length; i++) {
-          const item = e.clipboardData.items[i];
-          if (item.type.indexOf('image') !== -1 || item.type.indexOf('pdf') !== -1) {
-            const file = item.getAsFile();
-            if (file) files.push(file);
+          if (e.clipboardData.items[i].type.indexOf('image') !== -1) {
+            const f = e.clipboardData.items[i].getAsFile();
+            if (f) files.push(f);
           }
         }
       }
       if (files.length > 0) {
         e.preventDefault();
-        console.log('📋 [Rad ChatView] Global window paste captured', files.length, 'file(s)');
+        console.log('📋 [Rad ChatView] Global window paste captured', files.length, 'image(s)');
         processImageFiles(files);
       }
     };
@@ -382,28 +335,35 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setIsDraggingOver(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       console.log('📥 [Rad ChatView] Dropped', e.dataTransfer.files.length, 'file(s)');
+      // Accept all file types — processImageFiles routes images vs documents internally
       processImageFiles(e.dataTransfer.files);
     }
   };
 
   const handleSend = async () => {
+    if (isSubmittingRef.current) return;
     const hasInput = inputMessage.trim().length > 0;
     const hasAttachments = attachedPages.length > 0;
     const hasImages = pastedImages.length > 0;
+    const hasDocs = attachedDocuments.length > 0;
 
     console.log('🚀 [Rad ChatView] handleSend triggered:', {
       hasInput,
       hasAttachments,
       hasImages,
+      hasDocs,
       imagesCount: pastedImages.length,
+      docsCount: attachedDocuments.length,
       isSending,
     });
 
-    if ((!hasInput && !hasAttachments && !hasImages) || isAwaitingAi) {
+    if ((!hasInput && !hasAttachments && !hasImages && !hasDocs) || isAwaitingAi) {
       console.warn('⚠️ [Rad ChatView] Cannot send: empty input or already waiting for AI.');
       return;
     }
 
+    isSubmittingRef.current = true;
+    setIsSending(true);
     stickToBottomRef.current = true;
     setShowScrollBottom(false);
 
@@ -413,9 +373,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
         .map((p) => `[Referenced Document Page: "${p.fileName}", Page ${p.pageNum} of ${p.totalPages}]`)
         .join('\n');
       text = text ? `${pageRefs}\n\n${text}` : `${pageRefs}\n\nPlease analyze and explain this attached document page picture.`;
-    } else if (!text && hasImages) {
-      const hasPdf = pastedImages.some((img) => img.isPdf || img.dataUrl.startsWith('data:application/pdf'));
-      text = hasPdf ? 'Please analyze this attached PDF document.' : 'Please analyze this attached image.';
+    } else if (!text && hasImages && !hasDocs) {
+      text = 'Please analyze this attached image.';
+    } else if (!text && hasDocs && !hasImages) {
+      text = 'Please analyze the attached file(s).';
+    } else if (!text && hasDocs && hasImages) {
+      text = 'Please analyze the attached file(s) and image(s).';
     }
 
     // Collect images from BOTH attached PDF pages AND pasted images
@@ -425,7 +388,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
     const imageUrls = [...pageImages, ...pastedImages.map((img) => img.dataUrl)];
 
-    // Append extracted text if present for enhanced multi-modal accuracy
+    // Append extracted text from PDF notebook pages
     const extractedTextSections = attachedPages
       .filter((p) => p.extractedText && p.extractedText.trim().length > 0)
       .map((p) => `[Text from "${p.fileName}", Page ${p.pageNum}]:\n${p.extractedText}`)
@@ -435,15 +398,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
       text = text ? `${text}\n\n${extractedTextSections}` : extractedTextSections;
     }
 
+    // Inject extracted document text (DOCX / PPTX / XLSX / CSV / TXT / code)
+    if (hasDocs) {
+      const docSections = attachedDocuments
+        .map((doc) => {
+          const typeLabel = doc.fileType.toUpperCase();
+          return `[Attached ${typeLabel} File: "${doc.fileName}"${doc.truncated ? ' — truncated to first 80,000 characters' : ''}]\n\n${doc.extractedText}`;
+        })
+        .join('\n\n---\n\n');
+
+      text = text ? `${docSections}\n\n---\n\n${text}` : docSections;
+      console.log(`📄 [Rad ChatView] Injecting ${attachedDocuments.length} extracted doc(s) into message (${docSections.length} chars)`);
+    }
+
     console.log('📤 [Rad ChatView] Submitting message to onSendMessage:', {
-      text,
+      text: text.substring(0, 200) + (text.length > 200 ? '...' : ''),
       imageUrlsCount: imageUrls.length,
       pdfPageImagesCount: pageImages.length,
+      docCount: attachedDocuments.length,
     });
 
     setInputMessage('');
     setPastedImages([]);
-    setIsSending(true);
+    setAttachedDocuments([]);
 
     try {
       await onSendMessage(text, imageUrls);
@@ -451,6 +428,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     } catch (sendErr) {
       console.error('❌ [Rad ChatView] onSendMessage failed:', sendErr);
     } finally {
+      isSubmittingRef.current = false;
       setIsSending(false);
     }
   };
@@ -493,10 +471,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <div style={styles.avatarStack}>
                 {chat.participants.slice(0, 3).map((p) => {
                   const pInitial = p.charAt(0).toUpperCase();
+                  const pColor = getUserColor(p);
                   return (
                     <div
                       key={p}
-                      style={styles.stackAvatar}
+                      style={{
+                        ...styles.stackAvatar,
+                        backgroundColor: pColor,
+                      }}
                       title={p}
                     >
                       {pInitial}
@@ -564,6 +546,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 (u) => u.username.toLowerCase().trim() === senderName.toLowerCase().trim()
               );
               const senderInitial = senderName.charAt(0).toUpperCase();
+              const userColor = getUserColor(senderName);
 
               return (
                 <div
@@ -572,7 +555,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 >
                   {/* Sender Header Badge */}
                   <div style={isSelf ? styles.userHeaderSelf : styles.userHeaderOther}>
-                    <div style={styles.userAvatarMini}>
+                    <div style={{ ...styles.userAvatarMini, backgroundColor: userColor }}>
                       {senderInitial}
                     </div>
                     <span style={styles.userNameBadge}>
@@ -594,52 +577,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                   {/* Query Bubble */}
                   <div style={isSelf ? styles.userBubbleSelf : styles.userBubbleOther}>
-                    {/* Attached Images & PDFs in user message */}
+                    {/* Attached Images in user message */}
                     {msg.images && msg.images.length > 0 && (
                       <div style={styles.messageImagesRow}>
-                        {msg.images.map((imgUrl, idx) => {
-                          const isPdf = imgUrl.startsWith('data:application/pdf') || imgUrl.includes('application/pdf');
-                          if (isPdf) {
-                            return (
-                              <div
-                                key={idx}
-                                style={styles.messagePdfCard}
-                                onClick={() => {
-                                  const win = window.open();
-                                  if (win) {
-                                    win.document.write(`<iframe src="${imgUrl}" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%;" allowfullscreen></iframe>`);
-                                  }
-                                }}
-                                title="Click to view PDF document"
-                              >
-                                <div style={styles.pdfIconBadge}>
-                                  <FilePdfIcon size={22} />
-                                </div>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
-                                  <span style={{ fontSize: '13px', fontWeight: 600, color: '#f3f4f6' }}>PDF Document</span>
-                                  <span style={{ fontSize: '11px', color: '#9ca3af' }}>Click to view ↗</span>
-                                </div>
-                              </div>
-                            );
-                          }
-                          return (
-                            <div
-                              key={idx}
-                              style={styles.messageImageCard}
-                              onClick={() => setPreviewModalImage(imgUrl)}
-                              title="Click to view full image"
-                            >
-                              <img
-                                src={imgUrl}
-                                alt={`Attached screenshot ${idx + 1}`}
-                                style={styles.messageImageThumb}
-                              />
-                              <div style={styles.imageZoomHint}>
-                                <span>🔍 View</span>
-                              </div>
+                        {msg.images.map((imgUrl, idx) => (
+                          <div
+                            key={idx}
+                            style={styles.messageImageCard}
+                            onClick={() => setPreviewModalImage(imgUrl)}
+                            title="Click to view full image"
+                          >
+                            <img
+                              src={imgUrl}
+                              alt={`Attached screenshot ${idx + 1}`}
+                              style={styles.messageImageThumb}
+                            />
+                            <div style={styles.imageZoomHint}>
+                              <span>🔍 View</span>
                             </div>
-                          );
-                        })}
+                          </div>
+                        ))}
                       </div>
                     )}
                     {msg.content}
@@ -672,7 +629,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       >
                         <ReplyIcon size={12} />
                         <span style={styles.replyToLabel}>Replying to</span>
-                        <span style={styles.replyMiniAvatar}>
+                        <span
+                          style={{
+                            ...styles.replyMiniAvatar,
+                            backgroundColor: getUserColor(replyTo),
+                          }}
+                        >
                           {replyTo.charAt(0).toUpperCase()}
                         </span>
                         <span style={styles.replyTargetName}>
@@ -689,7 +651,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   {msg.content ? (
                     <MarkdownView content={msg.content} />
                   ) : (
-                    <ThinkingTimer />
+                    <div style={styles.thinkingPill}>
+                      <span style={styles.pulsingDot} />
+                      <span>Rad is thinking...</span>
+                    </div>
                   )}
                 </div>
               </div>
@@ -700,7 +665,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
           {chat.messages.length > 0 &&
             chat.messages[chat.messages.length - 1].role === 'user' && (
               <div style={styles.assistantRow}>
-                <ThinkingTimer />
+                <div style={styles.thinkingPill}>
+                  <span style={styles.pulsingDot} />
+                  <span>Rad is thinking...</span>
+                </div>
               </div>
             )}
 
@@ -721,11 +689,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Docked Bottom Chat Input Bar */}
       <div style={styles.bottomBarContainer}>
-        {/* Hidden File Picker for Image & PDF Upload */}
+        {/* Hidden File Picker — accepts images AND all document types */}
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*,application/pdf,.pdf"
+          accept="image/*,.docx,.pptx,.xlsx,.xls,.csv,.txt,.md,.json,.py,.js,.ts,.jsx,.tsx,.java,.c,.cpp,.h,.cs,.go,.rs,.rb,.php,.swift,.kt,.dart,.sql,.sh,.yml,.yaml,.toml,.html,.htm,.css,.xml"
           multiple
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
@@ -774,50 +742,73 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
         )}
 
-        {/* Pasted / Uploaded Image & PDF Previews Tray */}
-        {pastedImages && pastedImages.length > 0 && (
-          <div style={styles.imagesPreviewTray}>
-            {pastedImages.map((img) => {
-              const isPdf = img.isPdf || img.dataUrl.startsWith('data:application/pdf') || img.name.toLowerCase().endsWith('.pdf');
+        {/* Extracted Document Files Chips (DOCX / PPTX / XLSX / CSV / TXT / code) */}
+        {(attachedDocuments.length > 0 || isExtractingFile) && (
+          <div style={styles.attachedPagesBar}>
+            {isExtractingFile && (
+              <div style={{ ...styles.attachedPageChip, opacity: 0.7 }}>
+                <span style={{ fontSize: '14px' }}>⏳</span>
+                <span style={styles.attachedPageText}>Extracting file…</span>
+              </div>
+            )}
+            {attachedDocuments.map((doc, idx) => {
+              const icon = doc.fileType === 'docx' ? '📝'
+                : doc.fileType === 'pptx' ? '📊'
+                : (doc.fileType === 'xlsx' || doc.fileType === 'csv') ? '📋'
+                : doc.fileType === 'json' ? '🔧'
+                : doc.fileType === 'code' ? '💻'
+                : '📄';
               return (
-                <div key={img.id} style={isPdf ? styles.pdfThumbnailCard : styles.imageThumbnailCard} title={img.name}>
-                  {isPdf ? (
-                    <div style={styles.pdfThumbnailContent}>
-                      <div style={styles.pdfIconBadge}>
-                        <FilePdfIcon size={20} />
-                      </div>
-                      <div style={styles.pdfMetaInfo}>
-                        <span style={styles.pdfNameText}>{img.name}</span>
-                        <span style={styles.pdfSizeText}>{Math.round(img.size / 1024)} KB · PDF</span>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <img
-                        src={img.dataUrl}
-                        alt={img.name}
-                        style={styles.thumbnailImg}
-                      />
-                      <div style={styles.thumbnailOverlay}>
-                        <span style={styles.thumbnailNameText}>{img.name}</span>
-                      </div>
-                    </>
-                  )}
+                <div key={idx} style={styles.attachedPageChip} title={`${doc.charCount.toLocaleString()} characters extracted${doc.truncated ? ' (truncated)' : ''}`}>
+                  <span style={{ fontSize: '13px', flexShrink: 0 }}>{icon}</span>
+                  <span style={styles.attachedPageText}>
+                    {doc.fileName}
+                    {doc.truncated && <span style={{ color: 'var(--accent-terracotta)', marginLeft: '4px' }}>✂</span>}
+                  </span>
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleRemoveImage(img.id);
+                      setAttachedDocuments((prev) => prev.filter((_, i) => i !== idx));
                     }}
-                    style={styles.removeImageBtn}
+                    style={styles.removeChipBtn}
                     title="Remove file"
-                    aria-label="Remove file"
                   >
                     ✕
                   </button>
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* Pasted / Uploaded Image Previews Tray */}
+        {pastedImages && pastedImages.length > 0 && (
+          <div style={styles.imagesPreviewTray}>
+            {pastedImages.map((img) => (
+              <div key={img.id} style={styles.imageThumbnailCard} title={img.name}>
+                <img
+                  src={img.dataUrl}
+                  alt={img.name}
+                  style={styles.thumbnailImg}
+                />
+                <div style={styles.thumbnailOverlay}>
+                  <span style={styles.thumbnailNameText}>{img.name}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleRemoveImage(img.id);
+                  }}
+                  style={styles.removeImageBtn}
+                  title="Remove image"
+                  aria-label="Remove image"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
@@ -834,7 +825,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             type="button"
             onClick={() => fileInputRef.current?.click()}
             style={styles.plusBtn}
-            title="Attach image or PDF"
+            title="Attach image or content"
             aria-label="Attach file"
           >
             <PlusIcon size={16} />
@@ -849,11 +840,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
             placeholder={
               isListening
                 ? '🎙 Listening... speak now'
+                : attachedDocuments.length > 0
+                ? `Ask anything about ${attachedDocuments.map((d) => d.fileName).join(', ')}...`
                 : pastedImages.length > 0
                 ? 'Ask anything about this image...'
                 : attachedPages.length > 0
                 ? 'Ask a question about the attached page(s)...'
-                : 'Write a message... (Paste or drop images here)'
+                : 'Write a message... (Paste or drop images, docs, code here)'
             }
             rows={1}
             style={{
@@ -881,7 +874,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
             {/* Send Button */}
             {(() => {
-              const canSend = (inputMessage.trim().length > 0 || attachedPages.length > 0 || pastedImages.length > 0) && !isAwaitingAi;
+              const canSend = (inputMessage.trim().length > 0 || attachedPages.length > 0 || pastedImages.length > 0 || attachedDocuments.length > 0) && !isAwaitingAi;
               return (
                 <button
                   type="button"
@@ -954,10 +947,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     const isPending = pendingInviteUsernames.some(
                       (name) => name.toLowerCase().trim() === u.username.toLowerCase().trim()
                     );
+                    const color = getUserColor(u.username);
                     return (
                       <div key={u.username} style={styles.modalUserRow}>
                         <div style={styles.modalUserLeft}>
-                          <div style={styles.modalUserAvatar}>
+                          <div
+                            style={{
+                              ...styles.modalUserAvatar,
+                              backgroundColor: color,
+                            }}
+                          >
                             {u.username.charAt(0).toUpperCase()}
                           </div>
                           <div>
@@ -1084,14 +1083,14 @@ const styles: Record<string, React.CSSProperties> = {
     height: '18px',
     borderRadius: '50%',
     fontSize: '9px',
-    fontWeight: 600,
+    fontWeight: 700,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    color: '#ffffff',
-    backgroundColor: '#000000',
+    color: 'rgba(255, 255, 255, 0.85)',
+    backgroundColor: 'transparent',
     marginLeft: '-5px',
-    border: '1.5px solid rgba(255, 255, 255, 0.35)',
+    border: '1.5px solid rgba(255, 255, 255, 0.4)',
   },
   participantsCountText: {
     color: 'rgba(255, 255, 255, 0.75)',
@@ -1241,19 +1240,16 @@ const styles: Record<string, React.CSSProperties> = {
     paddingLeft: '4px',
   },
   userAvatarMini: {
-    width: '22px',
-    height: '22px',
+    width: '20px',
+    height: '20px',
     borderRadius: '50%',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    fontSize: '11px',
-    fontWeight: 600,
+    fontSize: '10.5px',
+    fontWeight: 700,
     color: '#ffffff',
-    backgroundColor: '#000000',
-    border: '1.5px solid rgba(255, 255, 255, 0.35)',
     boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
-    flexShrink: 0,
   },
   userNameBadge: {
     fontSize: '12px',
@@ -1361,18 +1357,15 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#7a756c',
   },
   replyMiniAvatar: {
-    width: '15px',
-    height: '15px',
+    width: '14px',
+    height: '14px',
     borderRadius: '50%',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontSize: '8.5px',
-    fontWeight: 600,
+    fontWeight: 700,
     color: '#ffffff',
-    backgroundColor: '#000000',
-    border: '1px solid rgba(255, 255, 255, 0.35)',
-    flexShrink: 0,
   },
   replyTargetName: {
     color: 'var(--accent-terracotta)',
@@ -1502,9 +1495,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '12px',
     fontWeight: 600,
     color: '#ffffff',
-    backgroundColor: '#000000',
-    border: '1.5px solid rgba(255, 255, 255, 0.35)',
-    flexShrink: 0,
   },
   modalUserName: {
     fontSize: '13px',
@@ -1720,70 +1710,6 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '8px',
     flexWrap: 'wrap',
     marginBottom: '8px',
-  },
-  pdfThumbnailCard: {
-    position: 'relative',
-    height: '60px',
-    minWidth: '130px',
-    maxWidth: '220px',
-    borderRadius: '10px',
-    backgroundColor: '#1c1b18',
-    border: '1px solid #4a3830',
-    boxShadow: '0 4px 10px rgba(0, 0, 0, 0.35)',
-    flexShrink: 0,
-    display: 'flex',
-    alignItems: 'center',
-    padding: '0 26px 0 10px',
-    gap: '8px',
-    cursor: 'pointer',
-  },
-  pdfThumbnailContent: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    overflow: 'hidden',
-  },
-  pdfIconBadge: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '32px',
-    height: '32px',
-    borderRadius: '6px',
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    color: '#ef4444',
-    flexShrink: 0,
-  },
-  pdfMetaInfo: {
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-    minWidth: 0,
-  },
-  pdfNameText: {
-    fontSize: '11px',
-    fontWeight: 500,
-    color: '#f0ede6',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
-  pdfSizeText: {
-    fontSize: '9.5px',
-    color: '#8a857b',
-  },
-  messagePdfCard: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '12px',
-    padding: '10px 16px',
-    borderRadius: '12px',
-    backgroundColor: 'rgba(25, 24, 22, 0.85)',
-    border: '1px solid rgba(239, 68, 68, 0.3)',
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
-    maxWidth: '320px',
-    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.25)',
   },
   messageImageCard: {
     position: 'relative',

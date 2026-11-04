@@ -4,6 +4,7 @@ import {
   PlusIcon,
   NotebooksIcon,
   SharedIcon,
+  HeadphonesIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   TrashIcon,
@@ -21,8 +22,8 @@ interface SidebarProps {
   activeChatId: string | null;
   onSelectChat: (chatId: string) => void;
   onDeleteChat?: (chatId: string) => Promise<void> | void;
-  activeView?: 'dashboard' | 'notebooks' | 'shared' | 'artifacts';
-  onSelectView?: (view: 'dashboard' | 'notebooks' | 'shared' | 'artifacts') => void;
+  activeView?: 'dashboard' | 'notebooks' | 'shared' | 'artifacts' | 'lofi';
+  onSelectView?: (view: 'dashboard' | 'notebooks' | 'shared' | 'artifacts' | 'lofi') => void;
   onLogout?: () => void;
   userProfile?: UserProfile | null;
   onOpenContactUs?: () => void;
@@ -186,9 +187,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 : 'transparent',
           }}
         >
-          <span style={styles.navIconWrapper}>
-            <PlusIcon size={15} />
-          </span>
+          <PlusIcon size={15} />
           <span>New</span>
         </button>
 
@@ -204,9 +203,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             fontWeight: activeView === 'notebooks' ? 500 : 450,
           }}
         >
-          <span style={styles.navIconWrapper}>
-            <NotebooksIcon size={16} />
-          </span>
+          <NotebooksIcon size={16} />
           <span>Notebooks</span>
         </button>
 
@@ -222,10 +219,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
             fontWeight: activeView === 'shared' ? 500 : 450,
           }}
         >
-          <span style={styles.navIconWrapper}>
-            <SharedIcon size={16} />
-          </span>
+          <SharedIcon size={16} />
           <span>Shared Contents</span>
+        </button>
+
+        {/* Lofi Music */}
+        <button
+          onClick={() => {
+            if (onSelectView) onSelectView('lofi');
+          }}
+          style={{
+            ...styles.navItem,
+            backgroundColor: activeView === 'lofi' ? '#212121' : 'transparent',
+            color: activeView === 'lofi' ? '#ffffff' : 'var(--text-secondary)',
+            fontWeight: activeView === 'lofi' ? 500 : 450,
+          }}
+        >
+          <HeadphonesIcon size={16} />
+          <span>Lofi Music</span>
         </button>
       </div>
 
@@ -515,13 +526,10 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'left',
     width: '100%',
   },
-  navIconWrapper: {
-    display: 'inline-flex',
+  navItemLeft: {
+    display: 'flex',
     alignItems: 'center',
-    justifyContent: 'center',
-    width: '18px',
-    height: '18px',
-    flexShrink: 0,
+    gap: '10px',
   },
   newChatBtn: {
     color: '#ece8df',

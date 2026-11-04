@@ -12,11 +12,45 @@ import { db } from '../firebase';
 import type { ChatSession, ChatMessage } from '../types/chat';
 import { requestRapidRouterChat, type ChatMessagePayload } from './rapidRouterService';
 
-const DEFAULT_AI_MODEL = 'Rad 1.1 Flash';
+const DEFAULT_AI_MODEL = 'qwen/qwen3.7-flash';
 
 function getStorageKey(userId: string): string {
   return `rad_user_chats_${userId.toLowerCase().trim()}`;
 }
+
+/**
+ * One-time startup localStorage purge.
+ * Clears ALL rad_user_chats_* keys that contain base64 image data,
+ * which were saved before the image-stripping fix landed.
+ * Runs once per browser session, identified by a session flag.
+ */
+(function purgeStaleImageCacheOnce() {
+  try {
+    const FLAG = 'rad_cache_purged_v2';
+    if (sessionStorage.getItem(FLAG)) return; // already ran this session
+    sessionStorage.setItem(FLAG, '1');
+
+    const keysToNuke: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('rad_user_chats_')) {
+        const val = localStorage.getItem(key) || '';
+        // If any entry contains base64 image data (data:image/), nuke the whole key
+        if (val.includes('data:image/') || val.includes('data:application/pdf')) {
+          keysToNuke.push(key);
+        }
+      }
+    }
+    keysToNuke.forEach((k) => {
+      try { localStorage.removeItem(k); } catch { /* ignore */ }
+    });
+    if (keysToNuke.length > 0) {
+      console.info(`[Rad] Purged ${keysToNuke.length} stale image cache key(s) from localStorage.`);
+    }
+  } catch {
+    // sessionStorage or localStorage unavailable — skip silently
+  }
+})();
 
 function getLocalChatsForUser(userId: string): ChatSession[] {
   try {
@@ -30,9 +64,28 @@ function getLocalChatsForUser(userId: string): ChatSession[] {
 
 function saveLocalChatsForUser(userId: string, chats: ChatSession[]) {
   try {
-    localStorage.setItem(getStorageKey(userId), JSON.stringify(chats));
-  } catch (e) {
-    console.warn(`Failed to save local chats for ${userId}:`, e);
+    // Strip heavy base64 image data completely from localStorage
+    // LocalStorage is strictly a fast UI cache; Firestore is the source-of-truth.
+    const stripped = chats.map((chat) => ({
+      ...chat,
+      messages: chat.messages.map((msg) => {
+        if (!msg.images || msg.images.length === 0) return msg;
+        return {
+          ...msg,
+          images: undefined,
+        };
+      }),
+    }));
+    // Keep at most 15 chats locally to stay well within 5MB quota
+    const trimmed = stripped.slice(0, 15);
+    localStorage.setItem(getStorageKey(userId), JSON.stringify(trimmed));
+  } catch {
+    // Quota reached or storage disabled — silently purge this user's key to free space
+    try {
+      localStorage.removeItem(getStorageKey(userId));
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -271,12 +324,14 @@ export async function createNewChat(
   images?: string[],
   chatIdOverride?: string,
   onStreamUpdate?: (streamedText: string) => void,
-  assistantMsgId?: string
+  assistantMsgId?: string,
+  userMsgId?: string
 ): Promise<string> {
   const userKey = userId.toLowerCase().trim();
   const chatId = chatIdOverride || ('chat_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7));
   const now = Date.now();
   const finalAiMsgId = assistantMsgId || ('msg_ai_' + (now + 1));
+  const finalUserMsgId = userMsgId || ('msg_' + now);
 
   let title = initialPrompt.trim();
   if (!title && images && images.length > 0) {
@@ -286,7 +341,7 @@ export async function createNewChat(
   }
 
   const userMsg: ChatMessage = {
-    id: 'msg_' + now,
+    id: finalUserMsgId,
     role: 'user',
     content: initialPrompt,
     createdAt: now,
@@ -315,13 +370,20 @@ export async function createNewChat(
   };
 
   saveLocalChatsForUser(userId, [newSession, ...getLocalChatsForUser(userId)]);
-  await persistSharedChat(newSession);
+  // Persist session to Firestore in background without blocking instant AI response
+  void persistSharedChat(newSession);
 
   void (async () => {
     try {
       const aiContent = await requestRapidRouterChat(
-        [{ role: 'user', content: initialPrompt, images: images && images.length > 0 ? images : undefined }],
-        undefined,
+        [
+          {
+            role: 'user',
+            content: initialPrompt.trim() || (images && images.length > 0 ? 'Please analyze this document or image.' : ''),
+            images: images && images.length > 0 ? images : undefined,
+          },
+        ],
+        'qwen/qwen3.7-flash',
         (accumulated) => {
           onStreamUpdate?.(accumulated);
         }
@@ -456,14 +518,16 @@ export async function sendChatMessage(
   modelName: string = DEFAULT_AI_MODEL,
   images?: string[],
   onStreamUpdate?: (streamedText: string) => void,
-  assistantMsgId?: string
+  assistantMsgId?: string,
+  userMsgId?: string
 ): Promise<void> {
   const userKey = userId.toLowerCase().trim();
   const now = Date.now();
   const finalAiMsgId = assistantMsgId || ('msg_ai_' + (now + 1));
+  const finalUserMsgId = userMsgId || ('msg_' + now);
 
   const userMsg: ChatMessage = {
-    id: 'msg_' + now,
+    id: finalUserMsgId,
     role: 'user',
     content: userPrompt,
     createdAt: now,
@@ -480,56 +544,69 @@ export async function sendChatMessage(
     replyToUser: userId,
   };
 
-  // ── Use local cache immediately — zero network wait ──────────────────────
+  // 1. Instantly read existing chat from local memory/cache (0ms blocking)
   const localChats = getLocalChatsForUser(userId);
-  const localSession = localChats.find((c) => c.id === chatId);
-
-  if (!localSession) {
-    console.error('❌ [Rad Chat] Target chat session not found for id:', chatId);
-    return;
-  }
+  const existingChat = localChats.find((c) => c.id === chatId);
 
   const withUserMsg: ChatSession = {
-    ...localSession,
-    model: modelName || localSession.model,
-    participants: uniqueParticipants(localSession.participants, [userKey]),
-    messages: mergeMessages(localSession.messages, [userMsg, placeholderAi]),
+    ...(existingChat || {
+      id: chatId,
+      title: userPrompt.substring(0, 36) || 'Chat',
+      createdAt: now,
+      updatedAt: now,
+      model: modelName,
+      messages: [],
+      creator: userId,
+      participants: [userKey],
+    }),
+    model: modelName || existingChat?.model || DEFAULT_AI_MODEL,
+    participants: uniqueParticipants(existingChat?.participants, [userKey]),
+    messages: mergeMessages(existingChat?.messages || [], [userMsg, placeholderAi]),
     updatedAt: now,
   };
 
-  // Save to local cache instantly
+  // Save to local cache immediately (0ms) so UI stays 100% responsive
   saveLocalChatsForUser(userId, [
     withUserMsg,
     ...localChats.filter((c) => c.id !== chatId),
   ]);
 
-  // Build history from local state
+  // Persist placeholder to cloud asynchronously in background — NEVER block AI stream
+  void (async () => {
+    try {
+      const canonical = (await loadCanonicalChat(chatId, userId)) || withUserMsg;
+      const merged = {
+        ...canonical,
+        participants: uniqueParticipants(canonical.participants, [userKey]),
+        messages: mergeMessages(canonical.messages, [userMsg, placeholderAi]),
+        updatedAt: now,
+      };
+      await persistSharedChat(merged);
+    } catch (e) {
+      console.warn('[Rad Chat] Background initial sync note:', e);
+    }
+  })();
+
+  // 2. Build history payload and START AI IMMEDIATELY with zero network latency
   const historyPayloads: ChatMessagePayload[] = withUserMsg.messages
-    .filter((m) => m.content && m.content.trim().length > 0)
+    .filter((m) => (m.content && m.content.trim().length > 0) || (m.images && m.images.length > 0))
     .map((m) => ({
       role: m.role,
-      content: m.content,
+      content: m.content?.trim() || (m.images && m.images.length > 0 ? 'Please analyze this document or image.' : ''),
       images: m.images,
     }));
 
-  // ── Fire AI + Firestore sync in parallel — AI is NOT blocked by Firestore ─
-  const [aiContent] = await Promise.all([
-    requestRapidRouterChat(historyPayloads, undefined, (accumulated) => {
+  let aiContent = '';
+  try {
+    aiContent = await requestRapidRouterChat(historyPayloads, 'qwen/qwen3.7-flash', (accumulated) => {
       onStreamUpdate?.(accumulated);
-    }).catch((err: any) => {
-      console.error('❌ [Rad AI] Generation error caught:', err);
-      const msg = "I'm temporarily experiencing high demand. Please try sending your message again in a moment.";
-      onStreamUpdate?.(msg);
-      return msg;
-    }),
+    });
+  } catch (err: any) {
+    console.error('❌ [Rad AI] RapidRouter AI generation error:', err);
+    aiContent = `⚠️ **AI Generation Error**: ${err?.message || 'Failed to generate response.'}`;
+    onStreamUpdate?.(aiContent);
+  }
 
-    // Firestore write runs in background — doesn't delay the AI
-    persistSharedChat(withUserMsg).catch((e) =>
-      console.warn('[Rad Chat] Background Firestore sync:', e)
-    ),
-  ]);
-
-  // ── Persist final AI response ─────────────────────────────────────────────
   const assistantMsg: ChatMessage = {
     id: finalAiMsgId,
     role: 'assistant',

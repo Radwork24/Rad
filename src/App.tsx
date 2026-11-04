@@ -6,13 +6,13 @@ import { Dashboard } from './components/Dashboard';
 import { ChatView } from './components/ChatView';
 import { NotebooksView } from './components/NotebooksView';
 import { SharedContentsView } from './components/SharedContentsView';
+import { LofiMusicView } from './components/LofiMusicView';
 import { FloatingDocumentViewer } from './components/FloatingDocumentViewer';
 import { FloatingCallWidget } from './components/FloatingCallWidget';
 import { FloatingPeerChat } from './components/FloatingPeerChat';
 import { ContactUsPage } from './components/ContactUsPage';
 import type { ChatSession, ChatMessage } from './types/chat';
-import type { NotebookItem, NotebookFile, AttachedPage, ShareSelection } from './types/notebook';
-import { subscribeToNotebooks } from './services/notebookService';
+import type { NotebookFile, AttachedPage } from './types/notebook';
 import type { UserProfile } from './services/userService';
 import type { ActiveCallState } from './services/callService';
 import {
@@ -29,7 +29,6 @@ import {
 } from './services/chatService';
 import {
   sendChatInvite,
-  sendNotebookShareInvite,
   subscribeToIncomingInvites,
   subscribeToSentInvites,
   acceptChatInvite,
@@ -51,9 +50,9 @@ export default function App() {
   });
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
+  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
   const [showContactUs, setShowContactUs] = useState(false);
-  const [activeView, setActiveView] = useState<'dashboard' | 'notebooks' | 'shared' | 'artifacts'>('dashboard');
+  const [activeView, setActiveView] = useState<'dashboard' | 'notebooks' | 'shared' | 'artifacts' | 'lofi'>('dashboard');
   const [chats, setChats] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [pendingChat, setPendingChat] = useState<ChatSession | null>(null);
@@ -68,10 +67,6 @@ export default function App() {
   const [isViewerMinimized, setIsViewerMinimized] = useState(false);
   const [attachedPages, setAttachedPages] = useState<AttachedPage[]>([]);
 
-  // Notebooks state & Sharing staging
-  const [notebooks, setNotebooks] = useState<NotebookItem[]>([]);
-  const [shareSelection, setShareSelection] = useState<ShareSelection | null>(null);
-
   // WebRTC Real-Time Voice Call State
   const [activeCall, setActiveCall] = useState<ActiveCallState | null>(null);
 
@@ -79,15 +74,6 @@ export default function App() {
   useEffect(() => {
     syncPendingLocalUsersToFirestore();
   }, []);
-
-  // Real-time listener for current user's notebooks in Firebase
-  useEffect(() => {
-    if (!currentUser?.username) return;
-    const unsubscribe = subscribeToNotebooks(currentUser.username, (userNotebooks) => {
-      setNotebooks(userNotebooks);
-    });
-    return () => unsubscribe();
-  }, [currentUser?.username]);
 
   // Real-time listener for all signed users from Firebase Firestore
   useEffect(() => {
@@ -103,15 +89,10 @@ export default function App() {
   useEffect(() => {
     if (!currentUser?.username) return;
     const unsubscribe = subscribeToIncomingCalls(currentUser.username, (incomingCall) => {
-      // Peer video calls are handled directly inside FloatingPeerChat
-      if (incomingCall.isVideo || incomingCall.callId.startsWith('vcall_')) {
-        return;
-      }
       setActiveCall(incomingCall);
     });
     return () => unsubscribe();
   }, [currentUser?.username]);
-
 
   useEffect(() => {
     if (!currentUser?.username) {
@@ -237,6 +218,7 @@ export default function App() {
     // 1. Generate chatId and optimistic chat synchronously for 0ms UI transition
     const newChatId = 'chat_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
     const now = Date.now();
+    const userMsgId = 'msg_' + now;
     const aiMsgId = 'msg_ai_' + (now + 1);
 
     let title = promptText.trim();
@@ -247,7 +229,7 @@ export default function App() {
     }
 
     const optimisticUserMsg: ChatMessage = {
-      id: 'msg_opt_user_' + now,
+      id: userMsgId,
       role: 'user',
       content: promptText,
       createdAt: now,
@@ -282,73 +264,28 @@ export default function App() {
 
     console.log('🚀 [Rad App] Instantly transitioned to ChatView with streaming session:', newChatId);
 
-    // RAF-throttled stream handler:
-    // - First chunk fires IMMEDIATELY for instant TTFT (user sees text right away)
-    // - Subsequent chunks are batched at ~60fps to avoid flooding React with re-renders
-    let rafHandle: number | null = null;
-    let latestStreamText = '';
-    let firstChunkDelivered = false;
-
     const handleStreamUpdate = (streamedText: string) => {
-      latestStreamText = streamedText;
-
-      if (!firstChunkDelivered) {
-        // Fire the very first visible chunk synchronously — zero delay TTFT
-        firstChunkDelivered = true;
-        const applyUpdate = (text: string) => {
-          setPendingChat((prev) => {
-            if (!prev || prev.id !== newChatId) return prev;
-            return {
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === aiMsgId ? { ...m, content: text } : m
-              ),
-            };
-          });
-
-          setChats((prev) =>
-            prev.map((c) => {
-              if (c.id !== newChatId) return c;
-              return {
-                ...c,
-                messages: c.messages.map((m) =>
-                  m.id === aiMsgId ? { ...m, content: text } : m
-                ),
-              };
-            })
-          );
+      setPendingChat((prev) => {
+        if (!prev || prev.id !== newChatId) return prev;
+        return {
+          ...prev,
+          messages: prev.messages.map((m) =>
+            m.id === aiMsgId ? { ...m, content: streamedText } : m
+          ),
         };
-        applyUpdate(streamedText);
-        return;
-      }
+      });
 
-      // Subsequent chunks: schedule a single RAF batch (deduplicated)
-      if (rafHandle !== null) return;
-      rafHandle = requestAnimationFrame(() => {
-        rafHandle = null;
-        const text = latestStreamText;
-        setPendingChat((prev) => {
-          if (!prev || prev.id !== newChatId) return prev;
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id !== newChatId) return c;
           return {
-            ...prev,
-            messages: prev.messages.map((m) =>
-              m.id === aiMsgId ? { ...m, content: text } : m
+            ...c,
+            messages: c.messages.map((m) =>
+              m.id === aiMsgId ? { ...m, content: streamedText } : m
             ),
           };
-        });
-
-        setChats((prev) =>
-          prev.map((c) => {
-            if (c.id !== newChatId) return c;
-            return {
-              ...c,
-              messages: c.messages.map((m) =>
-                m.id === aiMsgId ? { ...m, content: text } : m
-              ),
-            };
-          })
-        );
-      });
+        })
+      );
     };
 
     // 3. Persist session and stream AI completion in real-time
@@ -360,7 +297,8 @@ export default function App() {
         images,
         newChatId,
         handleStreamUpdate,
-        aiMsgId
+        aiMsgId,
+        userMsgId
       );
       console.log('✅ [Rad App] createNewChat streaming completed for:', newChatId);
     } catch (err) {
@@ -412,50 +350,18 @@ export default function App() {
       )
     );
 
-    // RAF-throttled stream handler:
-    // - First chunk fires IMMEDIATELY for instant TTFT
-    // - Subsequent chunks are batched at ~60fps
-    let rafHandleChat: number | null = null;
-    let latestChatStreamText = '';
-    let firstChatChunkDelivered = false;
-
     const handleStreamUpdate = (streamedText: string) => {
-      latestChatStreamText = streamedText;
-
-      if (!firstChatChunkDelivered) {
-        // Deliver first visible token immediately — zero-delay TTFT
-        firstChatChunkDelivered = true;
-        setChats((prev) =>
-          prev.map((c) => {
-            if (c.id !== activeChatId) return c;
-            return {
-              ...c,
-              messages: c.messages.map((m) =>
-                m.id === aiMsgId ? { ...m, content: streamedText } : m
-              ),
-            };
-          })
-        );
-        return;
-      }
-
-      // All subsequent chunks: batch to 60fps
-      if (rafHandleChat !== null) return;
-      rafHandleChat = requestAnimationFrame(() => {
-        rafHandleChat = null;
-        const text = latestChatStreamText;
-        setChats((prev) =>
-          prev.map((c) => {
-            if (c.id !== activeChatId) return c;
-            return {
-              ...c,
-              messages: c.messages.map((m) =>
-                m.id === aiMsgId ? { ...m, content: text } : m
-              ),
-            };
-          })
-        );
-      });
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id !== activeChatId) return c;
+          return {
+            ...c,
+            messages: c.messages.map((m) =>
+              m.id === aiMsgId ? { ...m, content: streamedText } : m
+            ),
+          };
+        })
+      );
     };
 
     try {
@@ -466,7 +372,8 @@ export default function App() {
         model,
         images,
         handleStreamUpdate,
-        aiMsgId
+        aiMsgId,
+        userMsgId
       );
     } catch (err) {
       console.error('❌ [Rad App] sendChatMessage failed:', err);
@@ -496,31 +403,16 @@ export default function App() {
     }
   };
 
-  const handleShareWithUser = async (targetUsername: string, selection: ShareSelection) => {
-    if (!currentUser?.username) return;
-    try {
-      await sendNotebookShareInvite(currentUser.username, targetUsername, selection);
-      console.log(`[RAD_SHARE] Sent share invite for ${selection.type} to @${targetUsername}`);
-    } catch (err: any) {
-      console.error('Failed to share with user:', err);
-      alert(err?.message || 'Failed to share item with user.');
-    }
-  };
-
   const handleAcceptInvite = async (invite: ChatInvite) => {
     try {
-      const res = await acceptChatInvite(invite, currentUser?.username);
-      if (res.chatSession) {
-        setChats((prev) => mergeChatLists(prev, [res.chatSession!]));
-        setPendingChat(res.chatSession);
-        setActiveChatId(res.chatSession.id);
-        setActiveView('dashboard');
-      } else if (res.notebook) {
-        setActiveView('notebooks');
-      }
+      const session = await acceptChatInvite(invite);
+      setChats((prev) => mergeChatLists(prev, [session]));
+      setPendingChat(session);
+      setActiveChatId(session.id);
+      setActiveView('dashboard');
     } catch (err: any) {
       console.error('Failed to accept invite:', err);
-      alert(err?.message || 'Could not open the shared item.');
+      alert(err?.message || 'Could not open the shared chat.');
     }
   };
 
@@ -555,9 +447,13 @@ export default function App() {
   }
 
   const activeChat = chats.find((c) => c.id === activeChatId) || (pendingChat?.id === activeChatId ? pendingChat : undefined);
-  const activeCollaborator = activeChat?.participants?.find(
-    (p) => p.toLowerCase().trim() !== currentUser.username.toLowerCase().trim()
-  );
+
+  // Collaborators in the CURRENT active shared chat (not global — scoped to this chat only)
+  const myKey = currentUser.username.toLowerCase().trim();
+  const activeChatCollaborators: string[] =
+    activeChatId && activeChat
+      ? (activeChat.participants || []).filter((p) => p.toLowerCase().trim() !== myKey)
+      : [];
 
   return (
     <div style={styles.appWrapper}>
@@ -572,7 +468,7 @@ export default function App() {
         activeView={activeView}
         onSelectView={(view) => {
           setActiveView(view);
-          if (view === 'notebooks' || view === 'shared') {
+          if (view === 'notebooks' || view === 'shared' || view === 'lofi') {
             setActiveChatId(null);
           }
         }}
@@ -608,15 +504,19 @@ export default function App() {
           isRightSidebarOpen={isRightSidebarOpen}
           onToggleRightSidebar={handleToggleRightSidebar}
           chats={chats}
-          notebooks={notebooks}
           allUsers={allUsers}
           currentUsername={currentUser.username}
           onSelectChat={handleSelectChat}
           onInviteUser={handleInviteUser}
-          onOpenNotebook={() => setActiveView('notebooks')}
-          onOpenDocumentViewer={handleOpenDocumentViewer}
           pendingInviteUsernames={sentInvites.map((invite) => invite.toUsername)}
           isLoading={isChatsLoading || isUsersLoading}
+        />
+      ) : activeView === 'lofi' ? (
+        <LofiMusicView
+          isSidebarOpen={isSidebarOpen}
+          onToggleSidebar={handleToggleSidebar}
+          isRightSidebarOpen={isRightSidebarOpen}
+          onToggleRightSidebar={handleToggleRightSidebar}
         />
       ) : activeView === 'notebooks' ? (
         <NotebooksView
@@ -626,12 +526,6 @@ export default function App() {
           onToggleRightSidebar={handleToggleRightSidebar}
           username={currentUser.username}
           onOpenDocumentViewer={handleOpenDocumentViewer}
-          shareSelection={shareSelection}
-          onSelectForShare={(selection) => {
-            setShareSelection(selection);
-            if (!isRightSidebarOpen) setIsRightSidebarOpen(true);
-          }}
-          onClearShareSelection={() => setShareSelection(null)}
         />
       ) : (
         <Dashboard
@@ -661,9 +555,6 @@ export default function App() {
         onAcceptInvite={handleAcceptInvite}
         onDeclineInvite={handleDeclineInvite}
         isLoadingUsers={isUsersLoading}
-        shareSelection={shareSelection}
-        onClearShareSelection={() => setShareSelection(null)}
-        onShareWithUser={handleShareWithUser}
       />
 
       {/* Floating, Movable, Resizable Document Viewer Window */}
@@ -684,19 +575,20 @@ export default function App() {
         onCallStateChange={setActiveCall}
       />
 
-      {/* Compact Floating Collaborator Chat for Shared Sessions */}
-      {activeChatId && activeChat && activeCollaborator && (
+      {/* Floating Peer Chat — only shown inside a shared chat (chat with multiple participants).
+           One pill per collaborator, stacked bottom-right with 72px spacing so they don't overlap. */}
+      {activeChatId && activeChatCollaborators.map((collaborator, idx) => (
         <FloatingPeerChat
-          key={activeChat.id}
-          chatId={activeChat.id}
+          key={`peer-chat-${activeChatId}-${collaborator}`}
+          chatId={activeChatId}
           currentUsername={currentUser.username}
-          collaboratorUsername={activeCollaborator}
+          collaboratorUsername={collaborator}
           collaboratorProfile={allUsers.find(
-            (u) => u.username.toLowerCase().trim() === activeCollaborator.toLowerCase().trim()
+            (u) => u.username.toLowerCase().trim() === collaborator.toLowerCase().trim()
           )}
-          bottomOffset={activeViewingFile ? 84 : 24}
+          bottomOffset={24 + idx * 72}
         />
-      )}
+      ))}
     </div>
   );
 }

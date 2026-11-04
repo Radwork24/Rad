@@ -51,7 +51,7 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [lastReadTimestamp, setLastReadTimestamp] = useState<number>(Date.now());
-  const [isDismissed, setIsDismissed] = useState(false);
+  // isDismissed intentionally removed — widget is always visible (no dismiss option)
 
   // Video call state
   const [videoStatus, setVideoStatus] = useState<VideoCallStatus>('idle');
@@ -76,7 +76,7 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
   // Subscribe to peer messages
   useEffect(() => {
     if (!chatId) return;
-    setIsDismissed(false);
+    setIsMinimized(true);
     const unsubscribe = subscribeToPeerMessages(chatId, (newMsgs) => {
       setMessages(newMsgs);
     });
@@ -261,7 +261,7 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
     return `${m}:${s}`;
   };
 
-  if (isDismissed) return null;
+  // Widget is always visible — no isDismissed guard
 
   const initialLetter = (collaboratorUsername || 'C').charAt(0).toUpperCase();
 
@@ -307,16 +307,7 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
         >
           <MaximizeIcon size={13} />
         </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            setIsDismissed(true);
-          }}
-          style={styles.pillActionBtn}
-          title="Close"
-        >
-          ✕
-        </button>
+        {/* No close/dismiss button — widget is permanently visible */}
       </div>
     );
   }
@@ -393,24 +384,20 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
           >
             <MinimizeIcon size={14} />
           </button>
-          <button
-            onClick={() => setIsDismissed(true)}
-            style={styles.headerActionBtn}
-            title="Close"
-          >
-            ✕
-          </button>
+          {/* No close/dismiss button in header — widget is permanently visible */}
         </div>
       </div>
 
       {/* ── Video Call Panel ── */}
       {isInCall && (
         <div style={{ ...styles.videoPanelContainer, height: videoPanelHeight }}>
-          {/* Remote video */}
+          {/* Remote video — MUTED: audio is played by the hidden <audio> element in callService.
+               This prevents double-audio echo (video element + audio element both playing remote voice) */}
           <video
             ref={remoteVideoRef}
             autoPlay
             playsInline
+            muted
             style={styles.remoteVideo}
           />
 

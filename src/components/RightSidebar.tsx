@@ -6,13 +6,10 @@ import {
   PlusIcon,
   PhoneIcon,
   BellIcon,
-  BookOpenIcon,
-  FilePdfIcon,
 } from './Icons';
 import type { UserProfile } from '../services/userService';
 import type { ChatSession } from '../types/chat';
 import type { ChatInvite } from '../services/inviteService';
-import type { ShareSelection } from '../types/notebook';
 import { LoadingHint, SkeletonList } from './LoadingState';
 
 interface RightSidebarProps {
@@ -28,9 +25,6 @@ interface RightSidebarProps {
   onAcceptInvite?: (invite: ChatInvite) => void;
   onDeclineInvite?: (invite: ChatInvite) => void;
   isLoadingUsers?: boolean;
-  shareSelection?: ShareSelection | null;
-  onClearShareSelection?: () => void;
-  onShareWithUser?: (username: string, selection: ShareSelection) => void;
 }
 
 
@@ -47,9 +41,6 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   onAcceptInvite,
   onDeclineInvite,
   isLoadingUsers = false,
-  shareSelection,
-  onClearShareSelection,
-  onShareWithUser,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isBellOpen, setIsBellOpen] = useState(false);
@@ -213,11 +204,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                             <div style={styles.bellInviteCopy}>
                               <span style={styles.bellInviteFrom}>{invite.fromUsername}</span>
                               <span style={styles.bellInviteMeta}>
-                                {invite.inviteType === 'notebook'
-                                  ? `shared notebook “${invite.notebookTitle || invite.chatTitle}”`
-                                  : invite.inviteType === 'document'
-                                  ? `shared document “${invite.sharedFile?.name || invite.chatTitle}”`
-                                  : `invited you to “${invite.chatTitle}”`}
+                                invited you to “{invite.chatTitle}”
                               </span>
                             </div>
                           </div>
@@ -260,36 +247,6 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
           </button>
         </div>
       </div>
-
-      {/* Active Share Selection Banner */}
-      {shareSelection && (
-        <div style={styles.shareBanner}>
-          <div style={styles.shareBannerIcon}>
-            {shareSelection.type === 'document' ? <FilePdfIcon size={15} /> : <BookOpenIcon size={15} />}
-          </div>
-          <div style={styles.shareBannerContent}>
-            <span style={styles.shareBannerTag}>
-              READY TO SHARE {shareSelection.type === 'document' ? 'DOCUMENT' : 'NOTEBOOK'}
-            </span>
-            <span
-              style={styles.shareBannerTitle}
-              title={shareSelection.type === 'document' ? shareSelection.file?.name : shareSelection.notebook.title}
-            >
-              {shareSelection.type === 'document' ? shareSelection.file?.name : shareSelection.notebook.title}
-            </span>
-            <span style={styles.shareBannerHint}>Click "Share" next to any user below</span>
-          </div>
-          {onClearShareSelection && (
-            <button
-              onClick={onClearShareSelection}
-              style={styles.shareBannerClose}
-              title="Cancel sharing"
-            >
-              ✕
-            </button>
-          )}
-        </div>
-      )}
 
       {/* Search Input */}
       <div style={styles.searchSection}>
@@ -395,19 +352,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                     </button>
                   )}
 
-                  {shareSelection ? (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onShareWithUser?.(u.username, shareSelection);
-                      }}
-                      style={styles.shareUserBtn}
-                      title={`Share ${shareSelection.type === 'document' ? 'document' : 'notebook'} with ${u.username}`}
-                    >
-                      <PlusIcon size={12} />
-                      <span>Share</span>
-                    </button>
-                  ) : isInChat ? (
+                  {isInChat ? (
                     <div style={styles.inChatBadge} title={`${u.username} is already in this chat`}>
                       <span style={styles.inChatText}>In chat</span>
                       <span style={styles.inChatCheck}>✓</span>
@@ -855,74 +800,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '11px',
     color: '#4ade80',
     fontWeight: 700,
-  },
-  shareBanner: {
-    margin: '10px 12px 6px',
-    padding: '10px 12px',
-    backgroundColor: 'rgba(217, 119, 87, 0.12)',
-    border: '1px solid rgba(217, 119, 87, 0.35)',
-    borderRadius: '10px',
-    display: 'flex',
-    alignItems: 'flex-start',
-    gap: '9px',
-    position: 'relative',
-  },
-  shareBannerIcon: {
-    color: 'var(--accent-terracotta)',
-    marginTop: '2px',
-    flexShrink: 0,
-  },
-  shareBannerContent: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '2px',
-    minWidth: 0,
-    flex: 1,
-  },
-  shareBannerTag: {
-    fontSize: '9.5px',
-    fontWeight: 700,
-    color: 'var(--accent-terracotta)',
-    letterSpacing: '0.5px',
-  },
-  shareBannerTitle: {
-    fontSize: '12px',
-    fontWeight: 600,
-    color: '#ffffff',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  shareBannerHint: {
-    fontSize: '10.5px',
-    color: 'rgba(255, 255, 255, 0.5)',
-    marginTop: '2px',
-  },
-  shareBannerClose: {
-    background: 'transparent',
-    border: 'none',
-    color: 'rgba(255, 255, 255, 0.4)',
-    cursor: 'pointer',
-    fontSize: '13px',
-    padding: '2px 4px',
-    borderRadius: '4px',
-    lineHeight: 1,
-  },
-  shareUserBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-    backgroundColor: 'var(--accent-terracotta)',
-    border: '1px solid var(--accent-terracotta)',
-    borderRadius: '9999px',
-    padding: '4px 10px',
-    fontSize: '11.5px',
-    fontWeight: 600,
-    color: '#ffffff',
-    cursor: 'pointer',
-    flexShrink: 0,
-    transition: 'all 0.15s ease',
-    boxShadow: '0 2px 8px rgba(217, 119, 87, 0.3)',
   },
 };
 
