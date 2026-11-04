@@ -1,22 +1,6 @@
 {
   "rewrites": [
     {
-      "source": "/api/groq/chat",
-      "destination": "/api/groq/chat"
-    },
-    {
-      "source": "/api/cerebras/chat",
-      "destination": "/api/cerebras/chat"
-    },
-    {
-      "source": "/api/lithos/chat",
-      "destination": "/api/lithos/chat"
-    },
-    {
-      "source": "/api/terminal-log",
-      "destination": "/api/terminal-log"
-    },
-    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
