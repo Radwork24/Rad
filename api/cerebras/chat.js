@@ -6,7 +6,6 @@ export const config = {
 };
 
 const CEREBRAS_URL = 'https://api.cerebras.ai/v1/chat/completions';
-const CEREBRAS_KEY = process.env.CEREBRAS_API_KEY || '';
 
 export default async function handler(req) {
   if (req.method === 'OPTIONS') {
@@ -25,12 +24,39 @@ export default async function handler(req) {
   }
 
   try {
-    const body = await req.text();
+    const authHeader = req.headers.get('authorization') || req.headers.get('Authorization') || '';
+    const clientKey = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const apiKey = (process.env.CEREBRAS_API_KEY || clientKey || '').trim();
+
+    if (!apiKey) {
+      return new Response(
+        JSON.stringify({ error: { message: 'CEREBRAS_API_KEY not found in environment variables or request headers.' } }),
+        {
+          status: 401,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+          },
+        }
+      );
+    }
+
+    const rawBody = await req.text();
+    let body = rawBody;
+    try {
+      const parsed = JSON.parse(rawBody);
+      if (parsed.reasoning_effort) {
+        delete parsed.reasoning_effort;
+      }
+      body = JSON.stringify(parsed);
+    } catch {
+      // Pass raw body if parsing fails
+    }
 
     const upstream = await fetch(CEREBRAS_URL, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${CEREBRAS_KEY}`,
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body,
@@ -46,7 +72,7 @@ export default async function handler(req) {
     });
   } catch (err) {
     return new Response(
-      JSON.stringify({ error: { message: err.message || 'Cerebras proxy error' } }),
+      JSON.stringify({ error: { message: err?.message || 'Cerebras proxy error' } }),
       {
         status: 500,
         headers: {
