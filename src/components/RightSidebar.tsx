@@ -4,8 +4,9 @@ import {
   SidebarToggleIcon,
   SearchIcon,
   PlusIcon,
-  PhoneIcon,
   BellIcon,
+  BookOpenIcon,
+  FilePdfIcon,
 } from './Icons';
 import type { UserProfile } from '../services/userService';
 import type { ChatSession } from '../types/chat';
@@ -35,7 +36,6 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   currentUsername,
   activeChat,
   onInviteUser,
-  onStartCall,
   incomingInvites = [],
   pendingInviteUsernames = [],
   onAcceptInvite,
@@ -44,7 +44,17 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isBellOpen, setIsBellOpen] = useState(false);
+  const [acceptingInviteId, setAcceptingInviteId] = useState<string | null>(null);
+  const [showEmptyChatTip, setShowEmptyChatTip] = useState(false);
   const bellWrapRef = useRef<HTMLDivElement | null>(null);
+
+  // Check if active chat has an actual ongoing conversation
+  const hasActiveConversation = Boolean(
+    activeChat &&
+    activeChat.id &&
+    activeChat.messages &&
+    activeChat.messages.some((m) => m.role === 'user' && m.content.trim().length > 0)
+  );
 
   // IDE-style dynamic resizing
   const [width, setWidth] = useState<number>(() => {
@@ -197,14 +207,44 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                   <div style={styles.bellList}>
                     {incomingInvites.map((invite) => {
                       const initial = invite.fromUsername.charAt(0).toUpperCase();
+                      const isNb = invite.type === 'notebook';
+                      const isDoc = invite.type === 'document';
+                      const inviteMetaText = isNb
+                        ? `shared notebook "${invite.notebookTitle || invite.chatTitle}"`
+                        : isDoc
+                        ? `shared document "${invite.fileName || invite.chatTitle}"`
+                        : `invited you to "${invite.chatTitle}"`;
+
                       return (
                         <div key={invite.id} style={styles.bellInviteCard}>
                           <div style={styles.bellInviteTop}>
                             <div style={styles.bellAvatar}>{initial}</div>
                             <div style={styles.bellInviteCopy}>
-                              <span style={styles.bellInviteFrom}>{invite.fromUsername}</span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <span style={styles.bellInviteFrom}>{invite.fromUsername}</span>
+                                {(isNb || isDoc) && (
+                                  <span
+                                    style={{
+                                      fontSize: '10px',
+                                      padding: '1px 6px',
+                                      borderRadius: '4px',
+                                      background: isDoc ? 'rgba(239, 68, 68, 0.2)' : 'rgba(59, 130, 246, 0.2)',
+                                      color: isDoc ? '#f87171' : '#60a5fa',
+                                      fontWeight: 600,
+                                      letterSpacing: '0.04em',
+                                      textTransform: 'uppercase',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '3px',
+                                    }}
+                                  >
+                                    {isDoc ? <FilePdfIcon size={10} /> : <BookOpenIcon size={10} />}
+                                    <span>{isDoc ? 'Doc' : 'Notebook'}</span>
+                                  </span>
+                                )}
+                              </div>
                               <span style={styles.bellInviteMeta}>
-                                invited you to “{invite.chatTitle}”
+                                {inviteMetaText}
                               </span>
                             </div>
                           </div>
@@ -215,17 +255,28 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                                 setIsBellOpen(false);
                               }}
                               style={styles.bellDeclineBtn}
+                              disabled={acceptingInviteId === invite.id}
                             >
                               Decline
                             </button>
                             <button
-                              onClick={() => {
-                                onAcceptInvite?.(invite);
-                                setIsBellOpen(false);
+                              onClick={async () => {
+                                setAcceptingInviteId(invite.id);
+                                try {
+                                  await onAcceptInvite?.(invite);
+                                } finally {
+                                  setAcceptingInviteId(null);
+                                  setIsBellOpen(false);
+                                }
                               }}
-                              style={styles.bellAcceptBtn}
+                              disabled={acceptingInviteId === invite.id}
+                              style={{
+                                ...styles.bellAcceptBtn,
+                                opacity: acceptingInviteId === invite.id ? 0.75 : 1,
+                                cursor: acceptingInviteId === invite.id ? 'wait' : 'pointer',
+                              }}
                             >
-                              Accept
+                              {acceptingInviteId === invite.id ? 'Joining…' : 'Accept'}
                             </button>
                           </div>
                         </div>
@@ -277,6 +328,21 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
       <div style={styles.sectionHeader}>
         <span style={styles.sectionTitle}>Signed Users</span>
       </div>
+
+      {/* Notice if the user is in an empty new chat */}
+      {!hasActiveConversation && (
+        <div style={styles.emptyChatBanner}>
+          <span style={styles.emptyChatBannerText}>
+            Start a conversation or select a recent chat to invite collaborators.
+          </span>
+        </div>
+      )}
+
+      {showEmptyChatTip && (
+        <div style={styles.emptyChatToast}>
+          <span>Please start a conversation or select a recent chat first to invite friends.</span>
+        </div>
+      )}
 
       {/* Scrollable User Cards List */}
       <div style={styles.userListScroll}>
@@ -336,22 +402,8 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                   )}
                 </div>
 
-                {/* Action Buttons: Call & Invite */}
+                {/* Action Buttons: Invite (Calls are strictly in peer chat) */}
                 <div style={styles.userCardActions}>
-                  {onStartCall && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onStartCall(u.username);
-                      }}
-                      style={styles.callUserBtn}
-                      title={`Start voice call with ${u.username}`}
-                      aria-label={`Call ${u.username}`}
-                    >
-                      <PhoneIcon size={11} />
-                    </button>
-                  )}
-
                   {isInChat ? (
                     <div style={styles.inChatBadge} title={`${u.username} is already in this chat`}>
                       <span style={styles.inChatText}>In chat</span>
@@ -361,6 +413,20 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                     <div style={styles.pendingBadge} title={`Waiting for ${u.username} to accept`}>
                       <span style={styles.pendingText}>Pending</span>
                     </div>
+                  ) : !hasActiveConversation ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowEmptyChatTip(true);
+                        setTimeout(() => setShowEmptyChatTip(false), 3200);
+                      }}
+                      style={styles.disabledInviteBtn}
+                      title="Start a conversation or select a recent chat to invite collaborators"
+                      aria-label={`Cannot invite ${u.username} in empty chat`}
+                    >
+                      <PlusIcon size={12} />
+                      <span>Invite</span>
+                    </button>
                   ) : (
                     <button
                       onClick={(e) => {
@@ -368,7 +434,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                         onInviteUser(u.username);
                       }}
                       style={styles.inviteBtn}
-                      title={`Invite ${u.username} to ${activeChat ? 'this chat' : 'start a chat'}`}
+                      title={`Invite ${u.username} to this chat`}
                       aria-label={`Invite ${u.username}`}
                     >
                       <PlusIcon size={12} />
@@ -753,17 +819,43 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '6px',
     flexShrink: 0,
   },
-  callUserBtn: {
+  emptyChatBanner: {
+    margin: '6px 12px 10px',
+    padding: '8px 10px',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    border: '1px dashed rgba(255, 255, 255, 0.12)',
+    borderRadius: '8px',
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'center',
-    width: '26px',
-    height: '26px',
-    borderRadius: '50%',
-    backgroundColor: 'rgba(59, 130, 246, 0.12)',
-    border: '1px solid rgba(59, 130, 246, 0.3)',
-    color: '#60a5fa',
-    cursor: 'pointer',
+  },
+  emptyChatBannerText: {
+    fontSize: '11px',
+    color: 'rgba(255, 255, 255, 0.55)',
+    lineHeight: 1.4,
+  },
+  emptyChatToast: {
+    margin: '0 12px 10px',
+    padding: '7px 10px',
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    border: '1px solid rgba(239, 68, 68, 0.35)',
+    borderRadius: '7px',
+    fontSize: '11px',
+    color: '#fca5a5',
+    lineHeight: 1.35,
+  },
+  disabledInviteBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    borderRadius: '9999px',
+    padding: '4px 9px',
+    fontSize: '11.5px',
+    fontWeight: 500,
+    color: 'rgba(255, 255, 255, 0.28)',
+    cursor: 'not-allowed',
+    flexShrink: 0,
     transition: 'all 0.15s ease',
   },
   inviteBtn: {

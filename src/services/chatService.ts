@@ -10,7 +10,8 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { ChatSession, ChatMessage } from '../types/chat';
-import { requestRapidRouterChat, type ChatMessagePayload } from './rapidRouterService';
+import { requestRapidRouterChat, type ChatMessagePayload, type GroupChatContext } from './rapidRouterService';
+import { cleanChatTitle } from '../utils/messageParser';
 
 const DEFAULT_AI_MODEL = 'qwen/qwen3.7-flash';
 
@@ -333,11 +334,9 @@ export async function createNewChat(
   const finalAiMsgId = assistantMsgId || ('msg_ai_' + (now + 1));
   const finalUserMsgId = userMsgId || ('msg_' + now);
 
-  let title = initialPrompt.trim();
-  if (!title && images && images.length > 0) {
+  let title = cleanChatTitle(initialPrompt);
+  if ((!title || title === 'New Chat') && images && images.length > 0) {
     title = 'Image analysis';
-  } else if (title.length > 36) {
-    title = title.substring(0, 36) + '...';
   }
 
   const userMsg: ChatMessage = {
@@ -551,7 +550,7 @@ export async function sendChatMessage(
   const withUserMsg: ChatSession = {
     ...(existingChat || {
       id: chatId,
-      title: userPrompt.substring(0, 36) || 'Chat',
+      title: cleanChatTitle(userPrompt) || 'Chat',
       createdAt: now,
       updatedAt: now,
       model: modelName,
@@ -587,20 +586,67 @@ export async function sendChatMessage(
     }
   })();
 
+  // 1. Detect if this is a collaborative group study room with multiple participants
+  const participants = Array.from(
+    new Set(
+      (withUserMsg.participants || [])
+        .concat(withUserMsg.messages.map((m) => m.sender).filter(Boolean) as string[])
+        .map((p) => p.trim())
+        .filter((p) => p.toLowerCase() !== 'rad ai' && p.toLowerCase() !== 'system')
+    )
+  );
+
+  const isGroupChat = participants.length > 1;
+
+  const groupContext: GroupChatContext | undefined = isGroupChat
+    ? {
+        isGroup: true,
+        activeSpeaker: userId,
+        participants,
+      }
+    : undefined;
+
   // 2. Build history payload and START AI IMMEDIATELY with zero network latency
   const historyPayloads: ChatMessagePayload[] = withUserMsg.messages
     .filter((m) => (m.content && m.content.trim().length > 0) || (m.images && m.images.length > 0))
-    .map((m) => ({
-      role: m.role,
-      content: m.content?.trim() || (m.images && m.images.length > 0 ? 'Please analyze this document or image.' : ''),
-      images: m.images,
-    }));
+    .map((m) => {
+      const isSystem = m.sender === 'system' || m.id.startsWith('msg_invite_');
+      let content =
+        m.content?.trim() ||
+        (m.images && m.images.length > 0 ? 'Please analyze this document or image.' : '');
+
+      // In group collaborative sessions, clearly attribute each user message so the AI
+      // knows exactly WHO asked what in previous turns and who is asking now
+      if (isGroupChat) {
+        if (isSystem) {
+          content = `[System Announcement: ${content.replace(/^🤝\s*/, '').replace(/\*\*/g, '')}]`;
+        } else if (m.role === 'user') {
+          const senderName = m.sender || userId;
+          // Avoid double-prefixing if already tagged
+          if (!content.startsWith(`[@${senderName}]:`)) {
+            content = `[@${senderName}]: ${content}`;
+          }
+        }
+      }
+
+      return {
+        role: m.role,
+        content,
+        sender: m.sender,
+        images: m.images,
+      };
+    });
 
   let aiContent = '';
   try {
-    aiContent = await requestRapidRouterChat(historyPayloads, 'qwen/qwen3.7-flash', (accumulated) => {
-      onStreamUpdate?.(accumulated);
-    });
+    aiContent = await requestRapidRouterChat(
+      historyPayloads,
+      'qwen/qwen3.7-flash',
+      (accumulated) => {
+        onStreamUpdate?.(accumulated);
+      },
+      groupContext
+    );
   } catch (err: any) {
     console.error('❌ [Rad AI] RapidRouter AI generation error:', err);
     aiContent = `⚠️ **AI Generation Error**: ${err?.message || 'Failed to generate response.'}`;

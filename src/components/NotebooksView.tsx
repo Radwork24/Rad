@@ -13,6 +13,7 @@ import {
   SearchIcon,
   TrashIcon,
   EyeIcon,
+  SharedIcon,
 } from './Icons';
 import type { NotebookItem, NotebookFile } from '../types/notebook';
 import { DocumentViewerModal } from './DocumentViewerModal';
@@ -23,6 +24,8 @@ import {
   uploadFileToNotebook,
   deleteFileFromNotebook,
 } from '../services/notebookService';
+import { sendNotebookInvite, type ChatInvite } from '../services/inviteService';
+import type { UserProfile } from '../services/userService';
 import { LoadingHint, SkeletonList } from './LoadingState';
 
 interface NotebooksViewProps {
@@ -33,6 +36,10 @@ interface NotebooksViewProps {
   username?: string;
   onStartChatWithNotebook?: (prompt: string) => void;
   onOpenDocumentViewer?: (file: NotebookFile) => void;
+  allUsers?: UserProfile[];
+  sentInvites?: ChatInvite[];
+  targetNotebookId?: string | null;
+  onOpenedNotebookChange?: (id: string | null) => void;
 }
 
 // Blue-toned spine gradients for book / folder covers
@@ -48,26 +55,51 @@ const BOOK_GRADIENTS = [
 export const NotebooksView: React.FC<NotebooksViewProps> = ({
   isSidebarOpen,
   onToggleSidebar,
-  isRightSidebarOpen = true,
+  isRightSidebarOpen = false,
   onToggleRightSidebar,
   username = 'default',
   onStartChatWithNotebook: _onStartChatWithNotebook,
   onOpenDocumentViewer,
+  allUsers = [],
+  sentInvites = [],
+  targetNotebookId = null,
+  onOpenedNotebookChange,
 }) => {
   const [notebooks, setNotebooks] = useState<NotebookItem[]>([]);
   const [isLoadingNotebooks, setIsLoadingNotebooks] = useState(true);
-  const [openedNotebookId, setOpenedNotebookId] = useState<string | null>(null);
+  const [openedNotebookId, setOpenedNotebookId] = useState<string | null>(targetNotebookId);
   const [activeViewingFile, setActiveViewingFile] = useState<NotebookFile | null>(null);
 
-  // Search & Filter
+  // Sync openedNotebookId with targetNotebookId prop
+  useEffect(() => {
+    if (targetNotebookId !== undefined) {
+      setOpenedNotebookId(targetNotebookId);
+    }
+  }, [targetNotebookId]);
+
+  const handleSetOpenedNotebook = (id: string | null) => {
+    setOpenedNotebookId(id);
+    onOpenedNotebookChange?.(id);
+  };
+
+  // Search & Filter (including 'shared' filter)
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterType, setFilterType] = useState<'all' | 'empty' | 'has_files'>('all');
+  const [filterType, setFilterType] = useState<'all' | 'shared' | 'has_files' | 'empty'>('all');
 
   // Modals & Forms
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [isCreating, setIsCreating] = useState(false);
+
+  // Sharing state
+  const [shareTarget, setShareTarget] = useState<{
+    notebook: NotebookItem;
+    file?: NotebookFile;
+  } | null>(null);
+  const [shareUserSearch, setShareUserSearch] = useState('');
+  const [sendingInviteUser, setSendingInviteUser] = useState<string | null>(null);
+  const [localPendingUsers, setLocalPendingUsers] = useState<string[]>([]);
 
   // Uploading state
   const [isUploading, setIsUploading] = useState(false);
@@ -109,7 +141,7 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
       setNewTitle('');
       setNewDesc('');
       setShowCreateModal(false);
-      setUploadStatusMsg(`Created notebook "${created.title}" in Firebase!`);
+      setUploadStatusMsg(`Created notebook "${created.title}" in Workspace!`);
       setTimeout(() => setUploadStatusMsg(null), 3500);
     } catch (err) {
       console.error('Failed to create notebook:', err);
@@ -137,14 +169,14 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
     const targetName = targetNb ? targetNb.title : 'notebook';
 
     setIsUploading(true);
-    setUploadStatusMsg(`Uploading ${files.length} document(s) to "${targetName}" in Firebase...`);
+    setUploadStatusMsg(`Uploading ${files.length} document(s) to "${targetName}" in Workspace...`);
 
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         await uploadFileToNotebook(username, targetId, file);
       }
-      setUploadStatusMsg(`Successfully uploaded to "${targetName}" in Firebase!`);
+      setUploadStatusMsg(`Successfully uploaded to "${targetName}" in Workspace!`);
     } catch (err) {
       console.error('Failed uploading files to notebook:', err);
       setUploadStatusMsg('Upload finished with local sync.');
@@ -183,9 +215,9 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
     try {
       await deleteNotebook(username, notebookId);
       if (openedNotebookId === notebookId) {
-        setOpenedNotebookId(null);
+        handleSetOpenedNotebook(null);
       }
-      setUploadStatusMsg('Notebook deleted from Firebase.');
+      setUploadStatusMsg('Notebook deleted from Workspace.');
       setTimeout(() => setUploadStatusMsg(null), 3000);
     } catch (err) {
       console.error('Failed to delete notebook:', err);
@@ -200,12 +232,51 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
 
     try {
       await deleteFileFromNotebook(username, notebookId, fileId);
-      setUploadStatusMsg(`Removed "${fileName}" from Firebase.`);
+      setUploadStatusMsg(`Removed "${fileName}" from Workspace.`);
       setTimeout(() => setUploadStatusMsg(null), 3000);
     } catch (err) {
       console.error('Failed to delete file:', err);
     }
   };
+
+  // Handler to send a share invite for a notebook or document
+  const handleSendShareInvite = async (targetUsername: string) => {
+    if (!shareTarget || !username || sendingInviteUser) return;
+    setSendingInviteUser(targetUsername);
+
+    try {
+      await sendNotebookInvite(
+        username,
+        targetUsername,
+        shareTarget.notebook,
+        shareTarget.file
+      );
+      setLocalPendingUsers((prev) => [...prev, targetUsername.toLowerCase().trim()]);
+      const targetName = shareTarget.file
+        ? `Document "${shareTarget.file.name}"`
+        : `Notebook "${shareTarget.notebook.title}"`;
+      setUploadStatusMsg(`Invite sent to ${targetUsername} for ${targetName}!`);
+      setTimeout(() => setUploadStatusMsg(null), 4000);
+    } catch (err: any) {
+      console.error('Failed to send share invite:', err);
+      alert(err?.message || 'Could not send invite. Please try again.');
+    } finally {
+      setSendingInviteUser(null);
+    }
+  };
+
+  // Filter available users for share modal (exclude logged-in user)
+  const normUser = (username || '').toLowerCase().trim();
+  const filteredShareUsers = allUsers.filter((u) => {
+    if (u.username.toLowerCase().trim() === normUser) return false;
+    const q = shareUserSearch.toLowerCase().trim();
+    if (!q) return true;
+    return (
+      u.username.toLowerCase().includes(q) ||
+      (u.stream && u.stream.toLowerCase().includes(q)) ||
+      (u.branch && u.branch.toLowerCase().includes(q))
+    );
+  });
 
   // Filter notebooks for the grid
   const filteredNotebooks = notebooks.filter((nb) => {
@@ -216,8 +287,14 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
       nb.files.some((f) => f.name.toLowerCase().includes(searchQuery.toLowerCase()));
 
     const fileCount = nb.files ? nb.files.length : 0;
+    const isShared = Boolean(
+      nb.isShared ||
+      (nb.sharedWith && nb.sharedWith.length > 0) ||
+      (nb.sharedBy && nb.sharedBy.toLowerCase().trim() !== normUser)
+    );
     const matchesFilter =
       filterType === 'all' ||
+      (filterType === 'shared' && isShared) ||
       (filterType === 'empty' && fileCount === 0) ||
       (filterType === 'has_files' && fileCount > 0);
 
@@ -252,7 +329,7 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
 
           {activeNotebook && (
             <button
-              onClick={() => setOpenedNotebookId(null)}
+              onClick={() => handleSetOpenedNotebook(null)}
               style={styles.backButton}
               title="Back to all notebooks"
             >
@@ -333,7 +410,20 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                     disabled={isUploading}
                   >
                     <UploadCloudIcon size={16} />
-                    <span>{isUploading ? 'Uploading to Firebase...' : 'Upload PDF / PPT'}</span>
+                    <span>{isUploading ? 'Uploading to Workspace...' : 'Upload PDF / PPT'}</span>
+                  </button>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShareTarget({ notebook: activeNotebook });
+                      setShareUserSearch('');
+                    }}
+                    style={styles.folderShareBtn}
+                    title="Share this notebook with a user"
+                  >
+                    <SharedIcon size={15} />
+                    <span>Share Notebook</span>
                   </button>
 
                   <button
@@ -459,6 +549,19 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                             <span>View Document</span>
                           </button>
 
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShareTarget({ notebook: activeNotebook, file });
+                              setShareUserSearch('');
+                            }}
+                            style={styles.fileShareBtn}
+                            title={`Share document "${file.name}" with a user`}
+                          >
+                            <SharedIcon size={13} />
+                            <span>Share</span>
+                          </button>
+
                           {file.downloadUrl && (
                             <a
                               href={file.downloadUrl}
@@ -516,10 +619,11 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
 
               {/* Filter Pills */}
               <div style={styles.filterPillsGroup}>
-                {(['all', 'has_files', 'empty'] as const).map((ft) => {
+                {(['all', 'shared', 'has_files', 'empty'] as const).map((ft) => {
                   const isSelected = filterType === ft;
                   const labels: Record<string, string> = {
                     all: 'All Notebooks',
+                    shared: 'Shared',
                     has_files: 'With Files',
                     empty: 'Empty Folders',
                   };
@@ -588,6 +692,11 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                 const fileCount = nb.files ? nb.files.length : 0;
                 const pdfCount = nb.files ? nb.files.filter((f) => f.type === 'pdf').length : 0;
                 const pptCount = nb.files ? nb.files.filter((f) => f.type === 'ppt' || f.type === 'pptx').length : 0;
+                const isShared = Boolean(
+                  nb.isShared ||
+                  (nb.sharedWith && nb.sharedWith.length > 0) ||
+                  (nb.sharedBy && nb.sharedBy.toLowerCase().trim() !== normUser)
+                );
 
                 let fileSubtitle = 'Empty · Ready for uploads';
                 if (fileCount > 0) {
@@ -602,7 +711,7 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                 return (
                   <div
                     key={nb.id}
-                    onClick={() => setOpenedNotebookId(nb.id)}
+                    onClick={() => handleSetOpenedNotebook(nb.id)}
                     style={styles.notebookFolderCard}
                     title={`Open "${nb.title}" folder`}
                   >
@@ -616,20 +725,55 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
 
                     {/* Card Inner Content */}
                     <div style={styles.cardContent}>
-                      {/* Top Row: Folder Badge & Delete Action */}
+                      {/* Top Row: Folder Badge, Shared Badge & Delete Action */}
                       <div style={styles.cardTopRow}>
-                        <div style={styles.folderBadgePill}>
-                          <FolderIcon size={12} />
-                          <span>FOLDER</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                          <div style={styles.folderBadgePill}>
+                            <FolderIcon size={12} />
+                            <span>FOLDER</span>
+                          </div>
+
+                          {isShared && (
+                            <div
+                              style={styles.sharedBadgePill}
+                              title={
+                                nb.sharedBy && nb.sharedBy.toLowerCase().trim() !== normUser
+                                  ? `Shared by ${nb.sharedBy}`
+                                  : `Shared with ${nb.sharedWith?.join(', ')}`
+                              }
+                            >
+                              <SharedIcon size={11} />
+                              <span>
+                                {nb.sharedBy && nb.sharedBy.toLowerCase().trim() !== normUser
+                                  ? `from @${nb.sharedBy}`
+                                  : 'Shared'}
+                              </span>
+                            </div>
+                          )}
                         </div>
 
-                        <button
-                          onClick={(e) => handleDeleteNotebook(nb.id, e)}
-                          style={styles.cardDeleteBtn}
-                          title="Delete notebook"
-                        >
-                          <TrashIcon size={14} />
-                        </button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShareTarget({ notebook: nb });
+                              setShareUserSearch('');
+                            }}
+                            style={styles.cardShareBtn}
+                            title={`Share "${nb.title}" with a user`}
+                            aria-label={`Share ${nb.title}`}
+                          >
+                            <SharedIcon size={14} />
+                          </button>
+
+                          <button
+                            onClick={(e) => handleDeleteNotebook(nb.id, e)}
+                            style={styles.cardDeleteBtn}
+                            title="Delete notebook"
+                          >
+                            <TrashIcon size={14} />
+                          </button>
+                        </div>
                       </div>
 
                       {/* Icon & Title */}
@@ -663,7 +807,7 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                         </button>
 
                         <button
-                          onClick={() => setOpenedNotebookId(nb.id)}
+                          onClick={() => handleSetOpenedNotebook(nb.id)}
                           style={styles.cardOpenBtn}
                         >
                           <span>Open</span>
@@ -680,6 +824,156 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* ========================================================
+          SHARE NOTEBOOK / DOCUMENT MODAL
+         ======================================================== */}
+      {shareTarget && (
+        <div style={styles.modalOverlay} onClick={() => setShareTarget(null)}>
+          <div style={styles.shareModalBox} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <div style={styles.modalTitleGroup}>
+                <div style={styles.modalIconWrap}>
+                  <SharedIcon size={18} />
+                </div>
+                <h3 style={styles.modalHeading}>
+                  {shareTarget.file ? 'Share Document' : 'Share Notebook'}
+                </h3>
+              </div>
+              <button
+                onClick={() => setShareTarget(null)}
+                style={styles.modalCloseBtn}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={styles.modalBody}>
+              {/* Item Summary Card */}
+              <div style={styles.shareItemCard}>
+                <div
+                  style={{
+                    width: '4px',
+                    borderRadius: '2px',
+                    background: shareTarget.notebook.coverColor || '#ff6b35',
+                  }}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <span style={styles.shareTypePill}>
+                      {shareTarget.file ? `${shareTarget.file.type.toUpperCase()} DOCUMENT` : 'STUDY NOTEBOOK'}
+                    </span>
+                    {shareTarget.file && (
+                      <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)' }}>
+                        from folder "{shareTarget.notebook.title}"
+                      </span>
+                    )}
+                  </div>
+                  <h4 style={styles.shareItemTitle}>
+                    {shareTarget.file ? shareTarget.file.name : shareTarget.notebook.title}
+                  </h4>
+                  <p style={styles.shareItemSubtitle}>
+                    {shareTarget.file
+                      ? `${shareTarget.file.size} · ${shareTarget.file.pageCount || 'Document'}`
+                      : `${shareTarget.notebook.files.length} document(s) · ${shareTarget.notebook.description || 'Course study folder'}`}
+                  </p>
+                </div>
+              </div>
+
+              {/* User Search Bar */}
+              <div style={{ marginTop: '12px', marginBottom: '8px' }}>
+                <label style={styles.formLabel}>Select a user to invite and share with</label>
+                <div style={styles.shareSearchBox}>
+                  <SearchIcon size={14} />
+                  <input
+                    type="text"
+                    value={shareUserSearch}
+                    onChange={(e) => setShareUserSearch(e.target.value)}
+                    placeholder="Search users by name, stream, or branch..."
+                    style={styles.shareSearchInput}
+                  />
+                  {shareUserSearch && (
+                    <button
+                      onClick={() => setShareUserSearch('')}
+                      style={{ background: 'transparent', border: 'none', color: '#888', cursor: 'pointer' }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Users List */}
+              <div style={styles.shareUsersList}>
+                {filteredShareUsers.length === 0 ? (
+                  <div style={{ padding: '24px 12px', textAlign: 'center', color: 'rgba(255,255,255,0.4)', fontSize: '13px' }}>
+                    {shareUserSearch ? 'No users matching search.' : 'No other registered users found.'}
+                  </div>
+                ) : (
+                  filteredShareUsers.map((u) => {
+                    const uInitial = u.username ? u.username.charAt(0).toUpperCase() : '?';
+                    const uKey = u.username.toLowerCase().trim();
+                    const isAlreadyShared =
+                      !shareTarget.file &&
+                      shareTarget.notebook.sharedWith?.some(
+                        (sw) => sw.toLowerCase().trim() === uKey
+                      );
+                    const isInvitePending =
+                      localPendingUsers.includes(uKey) ||
+                      sentInvites.some(
+                        (inv) =>
+                          inv.toUsername.toLowerCase().trim() === uKey &&
+                          inv.status === 'pending' &&
+                          (shareTarget.file
+                            ? inv.fileId === shareTarget.file.id
+                            : inv.notebookId === shareTarget.notebook.id)
+                      );
+                    const isSendingThis = sendingInviteUser === u.username;
+
+                    return (
+                      <div key={u.username} style={styles.shareUserRow}>
+                        <div style={styles.shareUserLeft}>
+                          <div style={styles.shareAvatarCircle}>{uInitial}</div>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={styles.shareUsername} title={u.username}>{u.username}</div>
+                            {(u.stream || u.branch) && (
+                              <div style={styles.shareUserMeta}>
+                                {u.stream && <span>{u.stream}</span>}
+                                {u.stream && u.branch && <span> · </span>}
+                                {u.branch && <span>{u.branch}</span>}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div>
+                          {isAlreadyShared ? (
+                            <span style={styles.alreadySharedBadge}>✓ Shared</span>
+                          ) : isInvitePending ? (
+                            <span style={styles.pendingBadge}>Invite Pending</span>
+                          ) : (
+                            <button
+                              onClick={() => handleSendShareInvite(u.username)}
+                              disabled={isSendingThis}
+                              style={{
+                                ...styles.sendInviteActionBtn,
+                                opacity: isSendingThis ? 0.6 : 1,
+                              }}
+                            >
+                              <SharedIcon size={12} />
+                              <span>{isSendingThis ? 'Sending...' : '+ Invite'}</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ========================================================
           CREATE NOTEBOOK MODAL
@@ -748,7 +1042,7 @@ export const NotebooksView: React.FC<NotebooksViewProps> = ({
                     cursor: !newTitle.trim() || isCreating ? 'not-allowed' : 'pointer',
                   }}
                 >
-                  {isCreating ? 'Creating in Firebase...' : 'Create Notebook'}
+                  {isCreating ? 'Creating in Workspace...' : 'Create Notebook'}
                 </button>
               </div>
             </form>
@@ -1583,6 +1877,202 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 500,
     padding: '8px 16px',
     borderRadius: '8px',
+    cursor: 'pointer',
+    transition: 'opacity 0.15s ease',
+  },
+  cardShareBtn: {
+    background: 'transparent',
+    border: 'none',
+    color: 'rgba(255,255,255,0.4)',
+    cursor: 'pointer',
+    padding: '4px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: '4px',
+    transition: 'color 0.15s ease, background-color 0.15s ease',
+  },
+  folderShareBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '8px 14px',
+    borderRadius: '8px',
+    border: '1px solid rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: '13px',
+    fontWeight: 500,
+    cursor: 'pointer',
+    transition: 'all 0.15s ease',
+  },
+  fileShareBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '6px 10px',
+    borderRadius: '6px',
+    border: '1px solid rgba(255,255,255,0.1)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: '12px',
+    fontWeight: 500,
+    cursor: 'pointer',
+  },
+  sharedBadgePill: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '4px',
+    padding: '2px 8px',
+    borderRadius: '10px',
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    color: '#60a5fa',
+    fontSize: '11px',
+    fontWeight: 500,
+    border: '1px solid rgba(59, 130, 246, 0.25)',
+  },
+  sharedWithBadgePill: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '4px',
+    padding: '2px 8px',
+    borderRadius: '10px',
+    backgroundColor: 'rgba(217, 119, 87, 0.15)',
+    color: 'var(--accent-terracotta)',
+    fontSize: '11px',
+    fontWeight: 500,
+    border: '1px solid rgba(217, 119, 87, 0.25)',
+  },
+  shareModalBox: {
+    width: '100%',
+    maxWidth: '520px',
+    maxHeight: '85vh',
+    backgroundColor: '#0d0d0e',
+    border: '1px solid rgba(255,255,255,0.12)',
+    borderRadius: '14px',
+    boxShadow: '0 24px 60px rgba(0, 0, 0, 0.85)',
+    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  shareItemCard: {
+    display: 'flex',
+    gap: '12px',
+    padding: '12px 14px',
+    borderRadius: '10px',
+    backgroundColor: '#171719',
+    border: '1px solid rgba(255,255,255,0.06)',
+  },
+  shareTypePill: {
+    fontSize: '10px',
+    fontWeight: 600,
+    letterSpacing: '0.04em',
+    padding: '2px 6px',
+    borderRadius: '4px',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    color: 'rgba(255,255,255,0.7)',
+  },
+  shareItemTitle: {
+    margin: '0 0 3px 0',
+    fontSize: '14px',
+    fontWeight: 600,
+    color: '#ffffff',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  shareItemSubtitle: {
+    margin: 0,
+    fontSize: '12px',
+    color: 'rgba(255,255,255,0.5)',
+  },
+  shareSearchBox: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '8px 12px',
+    borderRadius: '8px',
+    backgroundColor: '#171719',
+    border: '1px solid rgba(255,255,255,0.08)',
+    marginTop: '6px',
+  },
+  shareSearchInput: {
+    flex: 1,
+    background: 'transparent',
+    border: 'none',
+    outline: 'none',
+    fontSize: '13px',
+    color: '#ffffff',
+  },
+  shareUsersList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    maxHeight: '260px',
+    overflowY: 'auto',
+    paddingRight: '4px',
+  },
+  shareUserRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '8px 12px',
+    borderRadius: '8px',
+    backgroundColor: 'rgba(255,255,255,0.02)',
+    border: '1px solid rgba(255,255,255,0.04)',
+  },
+  shareUserLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    minWidth: 0,
+  },
+  shareAvatarCircle: {
+    width: '32px',
+    height: '32px',
+    borderRadius: '50%',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    border: '1px solid rgba(255,255,255,0.1)',
+    color: '#ffffff',
+    fontSize: '13px',
+    fontWeight: 600,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  shareUsername: {
+    fontSize: '13px',
+    fontWeight: 500,
+    color: 'rgba(255,255,255,0.92)',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  shareUserMeta: {
+    fontSize: '11px',
+    color: 'rgba(255,255,255,0.4)',
+  },
+  alreadySharedBadge: {
+    fontSize: '11px',
+    fontWeight: 500,
+    color: '#34d399',
+    backgroundColor: 'rgba(52, 211, 153, 0.1)',
+    border: '1px solid rgba(52, 211, 153, 0.25)',
+    padding: '3px 8px',
+    borderRadius: '6px',
+  },
+  sendInviteActionBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '5px',
+    padding: '5px 12px',
+    borderRadius: '6px',
+    backgroundColor: 'var(--accent-terracotta)',
+    border: 'none',
+    color: '#ffffff',
+    fontSize: '12px',
+    fontWeight: 500,
     cursor: 'pointer',
     transition: 'opacity 0.15s ease',
   },

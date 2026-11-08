@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { compressImageDataUrl } from '../utils/imageUtils';
+import { extractTextFromFile, isSupportedDocument, type ExtractedFile } from '../services/fileExtractService';
 import { getTimeGreeting, type TimeGreeting } from '../utils/greetingUtils';
 import radLogo from '../assets/logo.png';
 import {
@@ -51,7 +52,7 @@ const SUGGESTIONS = [
 export const Dashboard: React.FC<DashboardProps> = ({
   isSidebarOpen,
   onToggleSidebar,
-  isRightSidebarOpen = true,
+  isRightSidebarOpen = false,
   onToggleRightSidebar,
   onSubmitPrompt,
   username,
@@ -64,6 +65,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [isListening, setIsListening] = useState(false);
   const [isVoiceActive, setIsVoiceActive] = useState(false);
   const [pastedImages, setPastedImages] = useState<AttachedImagePreview[]>([]);
+  const [attachedDocuments, setAttachedDocuments] = useState<ExtractedFile[]>([]);
+  const [isExtractingFile, setIsExtractingFile] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [greeting] = useState<TimeGreeting>(() => getTimeGreeting());
 
@@ -153,13 +156,26 @@ export const Dashboard: React.FC<DashboardProps> = ({
     setPrompt(e.target.value);
   };
 
-  // Process image files with compression and add them to preview state
+  // Process files: images → preview tray; documents (PDF/DOCX/PPTX/etc.) → text extraction
   const processImageFiles = async (files: FileList | File[]) => {
-    console.log('📸 [Rad Dashboard] Processing image files count:', files.length);
+    console.log('📸 [Rad Dashboard] Processing files count:', files.length);
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+
+      // ── Documents (PDF / DOCX / PPTX / XLSX / CSV / TXT / code / JSON) ──
+      if (isSupportedDocument(file)) {
+        console.log(`📄 [Rad Dashboard] Extracting document: "${file.name}" (${file.type}, ${Math.round(file.size / 1024)} KB)`);
+        setIsExtractingFile(true);
+        const extracted = await extractTextFromFile(file);
+        setIsExtractingFile(false);
+        setAttachedDocuments((prev) => [...prev, extracted]);
+        console.log(`✅ [Rad Dashboard] Document extracted: "${file.name}" — ${extracted.charCount} chars${extracted.truncated ? ' (truncated)' : ''}`);
+        continue;
+      }
+
+      // ── Images ──
       if (!file.type.startsWith('image/')) {
-        console.warn('⚠️ [Rad Dashboard] Skipping non-image file:', file.name, file.type);
+        console.warn('⚠️ [Rad Dashboard] Skipping unsupported file:', file.name, file.type);
         continue;
       }
       console.log(`📸 [Rad Dashboard] Reading image file: "${file.name}" (${file.type}, ${Math.round(file.size / 1024)} KB)`);
@@ -187,22 +203,21 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   };
 
-  // Paste handler: allows pasting screenshots or copied images directly into input bar
+  // Paste handler: allows pasting screenshots or copied files directly into input bar
   const handlePaste = (e: React.ClipboardEvent) => {
     console.log('📋 [Rad Dashboard] Paste event captured on input bar');
     const files: File[] = [];
 
     if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
       for (let i = 0; i < e.clipboardData.files.length; i++) {
-        const file = e.clipboardData.files[i];
-        if (file.type.startsWith('image/')) files.push(file);
+        files.push(e.clipboardData.files[i]);
       }
     }
 
     if (files.length === 0 && e.clipboardData?.items) {
       for (let i = 0; i < e.clipboardData.items.length; i++) {
         const item = e.clipboardData.items[i];
-        if (item.type.indexOf('image') !== -1) {
+        if (item.kind === 'file') {
           const file = item.getAsFile();
           if (file) files.push(file);
         }
@@ -211,7 +226,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
     if (files.length > 0) {
       e.preventDefault();
-      console.log('📋 [Rad Dashboard] Found', files.length, 'pasted image(s) in clipboard');
+      console.log('📋 [Rad Dashboard] Found', files.length, 'pasted file(s) in clipboard');
       processImageFiles(files);
     }
   };
@@ -229,20 +244,21 @@ export const Dashboard: React.FC<DashboardProps> = ({
       const files: File[] = [];
       if (e.clipboardData?.files && e.clipboardData.files.length > 0) {
         for (let i = 0; i < e.clipboardData.files.length; i++) {
-          if (e.clipboardData.files[i].type.startsWith('image/')) files.push(e.clipboardData.files[i]);
+          files.push(e.clipboardData.files[i]);
         }
       }
       if (files.length === 0 && e.clipboardData?.items) {
         for (let i = 0; i < e.clipboardData.items.length; i++) {
-          if (e.clipboardData.items[i].type.indexOf('image') !== -1) {
-            const f = e.clipboardData.items[i].getAsFile();
+          const item = e.clipboardData.items[i];
+          if (item.kind === 'file') {
+            const f = item.getAsFile();
             if (f) files.push(f);
           }
         }
       }
       if (files.length > 0) {
         e.preventDefault();
-        console.log('📋 [Rad Dashboard] Global window paste captured', files.length, 'image(s)');
+        console.log('📋 [Rad Dashboard] Global window paste captured', files.length, 'file(s)');
         processImageFiles(files);
       }
     };
@@ -287,34 +303,47 @@ export const Dashboard: React.FC<DashboardProps> = ({
     const hasPrompt = prompt.trim().length > 0;
     const hasAttachments = attachedPages.length > 0;
     const hasImages = pastedImages.length > 0;
+    const hasDocs = attachedDocuments.length > 0;
 
     console.log('🚀 [Rad Dashboard] handleSend button clicked:', {
       hasPrompt,
       hasAttachments,
       hasImages,
+      hasDocs,
       imagesCount: pastedImages.length,
+      docsCount: attachedDocuments.length,
       model: selectedModel.id,
     });
 
-    if (hasPrompt || hasAttachments || hasImages) {
+    if (hasPrompt || hasAttachments || hasImages || hasDocs) {
       let text = prompt.trim();
       if (hasAttachments) {
         const pageRefs = attachedPages
           .map((p) => `[Referenced Document Page: "${p.fileName}", Page ${p.pageNum} of ${p.totalPages}]`)
           .join('\n');
         text = text ? `${pageRefs}\n\n${text}` : `${pageRefs}\n\nPlease analyze and explain this attached document page picture.`;
-      } else if (!text && hasImages) {
+      } else if (!text && hasImages && !hasDocs) {
         text = 'Please analyze this attached image.';
+      } else if (!text && hasDocs && !hasImages) {
+        text = 'Please analyze the attached file(s).';
+      } else if (!text && hasDocs && hasImages) {
+        text = 'Please analyze the attached file(s) and image(s).';
       }
 
-      // Collect images from BOTH attached PDF pages AND pasted images
+      // Collect images from attached PDF pages, pasted images, AND embedded document images/screenshots
       const pageImages = attachedPages
         .map((p) => p.imageDataUrl)
         .filter((url): url is string => Boolean(url));
+      const docEmbeddedImages = attachedDocuments
+        .flatMap((doc) => doc.images || []);
 
-      const imageUrls = [...pageImages, ...pastedImages.map((img) => img.dataUrl)];
+      const imageUrls = [
+        ...pageImages,
+        ...pastedImages.map((img) => img.dataUrl),
+        ...docEmbeddedImages,
+      ];
 
-      // Append extracted text if present for enhanced multi-modal accuracy
+      // Append extracted text from PDF notebook pages
       const extractedTextSections = attachedPages
         .filter((p) => p.extractedText && p.extractedText.trim().length > 0)
         .map((p) => `[Text from "${p.fileName}", Page ${p.pageNum}]:\n${p.extractedText}`)
@@ -324,20 +353,38 @@ export const Dashboard: React.FC<DashboardProps> = ({
         text = text ? `${text}\n\n${extractedTextSections}` : extractedTextSections;
       }
 
+      // Inject extracted document content (PDF / DOCX / PPTX / XLSX / CSV / TXT / code)
+      if (hasDocs) {
+        const docSections = attachedDocuments
+          .map((doc) => {
+            const typeLabel = doc.fileType.toUpperCase();
+            return `--- BEGIN DOCUMENT CONTENT: "${doc.fileName}" (${typeLabel}) ---\n${doc.extractedText}\n--- END DOCUMENT CONTENT ---`;
+          })
+          .join('\n\n');
+
+        const userPrompt = prompt.trim();
+        text = userPrompt
+          ? `${docSections}\n\nUser Question about the above document: ${userPrompt}`
+          : `${docSections}\n\nPlease thoroughly analyze, explain, and summarize the contents of the document provided above.`;
+        console.log(`📄 [Rad Dashboard] Injecting ${attachedDocuments.length} extracted doc(s) into prompt (${docSections.length} chars, ${docEmbeddedImages.length} embedded images)`);
+      }
+
       console.log('📤 [Rad Dashboard] Submitting query to onSubmitPrompt:', {
-        text,
+        text: text.substring(0, 200) + (text.length > 200 ? '...' : ''),
         model: selectedModel.id,
         imageUrlsCount: imageUrls.length,
         pdfPageImagesCount: pageImages.length,
+        docCount: attachedDocuments.length,
       });
 
       setPrompt('');
       setPastedImages([]);
+      setAttachedDocuments([]);
       if (onSubmitPrompt) {
         onSubmitPrompt(text, selectedModel.id, imageUrls);
       }
     } else {
-      console.warn('⚠️ [Rad Dashboard] handleSend called but input is empty and no attachments/images.');
+      console.warn('⚠️ [Rad Dashboard] handleSend called but input is empty and no attachments/images/docs.');
     }
   };
 
@@ -408,11 +455,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          {/* Hidden File Input for Image Upload */}
+          {/* Hidden File Input for Image & Document Upload */}
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,.pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.csv,.txt,.md,.json,.py,.js,.ts,.jsx,.tsx,.java,.c,.cpp,.h,.cs,.go,.rs,.rb,.php,.swift,.kt,.dart,.sql,.sh,.yml,.yaml,.toml,.html,.htm,.css,.xml"
             multiple
             onChange={handleFileInputChange}
             style={{ display: 'none' }}
@@ -461,6 +508,47 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </div>
           )}
 
+          {/* Attached Directly Uploaded Document Chips (PDF / DOCX / PPTX / XLSX / CSV / TXT / code) */}
+          {(attachedDocuments.length > 0 || isExtractingFile) && (
+            <div style={styles.attachedPagesBar}>
+              {isExtractingFile && (
+                <div style={{ ...styles.attachedPageChip, opacity: 0.7 }}>
+                  <span style={{ fontSize: '14px' }}>⏳</span>
+                  <span style={styles.attachedPageText}>Extracting file…</span>
+                </div>
+              )}
+              {attachedDocuments.map((doc, idx) => {
+                const icon = doc.fileType === 'pdf' ? '📕'
+                  : doc.fileType === 'docx' ? '📝'
+                  : doc.fileType === 'pptx' ? '📊'
+                  : (doc.fileType === 'xlsx' || doc.fileType === 'csv') ? '📋'
+                  : doc.fileType === 'json' ? '🔧'
+                  : doc.fileType === 'code' ? '💻'
+                  : '📄';
+                return (
+                  <div key={idx} style={styles.attachedPageChip} title={`${doc.charCount.toLocaleString()} characters extracted${doc.truncated ? ' (truncated)' : ''}`}>
+                    <span style={{ fontSize: '13px', flexShrink: 0 }}>{icon}</span>
+                    <span style={styles.attachedPageText}>
+                      {doc.fileName}
+                      {doc.truncated && <span style={{ color: 'var(--accent-terracotta)', marginLeft: '4px' }}>✂</span>}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setAttachedDocuments((prev) => prev.filter((_, i) => i !== idx));
+                      }}
+                      style={styles.removeChipBtn}
+                      title="Remove file"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {/* Pasted / Uploaded Image Previews Tray */}
           {pastedImages && pastedImages.length > 0 && (
             <div style={styles.imagesPreviewTray}>
@@ -498,11 +586,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={
-              pastedImages.length > 0
-                ? "Ask anything about this image..."
+              isListening
+                ? '🎙 Listening... speak now'
+                : attachedDocuments.length > 0
+                ? `Ask anything about ${attachedDocuments.map((d) => d.fileName).join(', ')}...`
+                : pastedImages.length > 0
+                ? 'Ask anything about this image...'
                 : attachedPages.length > 0
-                ? "Ask a question about the attached page(s)..."
-                : "How can I help you today? (Paste or drop images here)"
+                ? 'Ask a question about the attached page(s)...'
+                : 'How can I help you today? (Paste or drop images, PDFs, docs here)'
             }
             style={styles.textarea}
             rows={2}
@@ -561,7 +653,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
               {/* Send Query Button */}
               {(() => {
-                const canSend = prompt.trim().length > 0 || attachedPages.length > 0 || pastedImages.length > 0;
+                const canSend = prompt.trim().length > 0 || attachedPages.length > 0 || pastedImages.length > 0 || attachedDocuments.length > 0;
                 return (
                   <button
                     type="button"
@@ -574,7 +666,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       cursor: canSend ? 'pointer' : 'default',
                       opacity: canSend ? 1 : 0.65,
                     }}
-                    title={canSend ? 'Send query' : 'Type a query or paste an image to send'}
+                    title={canSend ? 'Send query' : 'Type a query or paste/upload a file to send'}
                     aria-label="Send query"
                   >
                     <ArrowUpIcon size={15} />

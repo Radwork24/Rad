@@ -11,6 +11,8 @@
  *  - Zero network calls — 100% browser/client-side
  */
 
+import { extractAllTextFromPdf } from './pdfService';
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const MAX_CHARS = 80_000; // ~20k tokens — plenty for even large docs
@@ -24,6 +26,7 @@ export interface ExtractedFile {
   extractedText: string; // ready to inject into AI message
   charCount: number;
   truncated: boolean;
+  images?: string[];     // base64 embedded images/screenshots inside document
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -51,6 +54,7 @@ export async function extractTextFromFile(file: File): Promise<ExtractedFile> {
 
   try {
     switch (category) {
+      case 'pdf':    return await extractPdf(file);
       case 'docx':   return await extractDocx(file);
       case 'pptx':   return await extractPptx(file);
       case 'xlsx':   return await extractXlsx(file);
@@ -60,7 +64,7 @@ export async function extractTextFromFile(file: File): Promise<ExtractedFile> {
       case 'json':   return await extractJson(file);
       default:
         return makeResult(file, 'unsupported',
-          `[Unsupported file type: ${file.name}. Supported types: DOCX, PPTX, XLSX, XLS, CSV, TXT, MD, JSON, and code files.]`);
+          `[Unsupported file type: ${file.name}. Supported types: PDF, DOCX, PPTX, XLSX, XLS, CSV, TXT, MD, JSON, and code files.]`);
     }
   } catch (err) {
     console.error(`❌ [FileExtract] Unexpected error extracting "${file.name}":`, err);
@@ -75,8 +79,9 @@ function getFileCategory(file: File): string {
   const name = file.name.toLowerCase();
   const mime = (file.type || '').toLowerCase();
 
-  if (name.endsWith('.docx') || mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx';
-  if (name.endsWith('.pptx') || mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') return 'pptx';
+  if (name.endsWith('.pdf') || mime === 'application/pdf') return 'pdf';
+  if (name.endsWith('.docx') || name.endsWith('.doc') || mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || mime === 'application/msword') return 'docx';
+  if (name.endsWith('.pptx') || name.endsWith('.ppt') || mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' || mime === 'application/vnd.ms-powerpoint') return 'pptx';
   if (name.endsWith('.xlsx') || mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return 'xlsx';
   if (name.endsWith('.xls')  || mime === 'application/vnd.ms-excel') return 'xlsx';
   if (name.endsWith('.csv')  || mime === 'text/csv') return 'csv';
@@ -99,30 +104,127 @@ function getFileCategory(file: File): string {
   return 'unsupported';
 }
 
-// ─── DOCX Extractor ──────────────────────────────────────────────────────────
+// ─── PDF Extractor ───────────────────────────────────────────────────────────
+
+async function extractPdf(file: File): Promise<ExtractedFile> {
+  try {
+    const { text, numPages } = await extractAllTextFromPdf(file);
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return makeResult(
+        file,
+        'pdf',
+        `[The PDF file "${file.name}" has ${numPages} page(s) but no extractable text. It may contain scanned image pages.]`
+      );
+    }
+    return makeResult(file, 'pdf', trimmed);
+  } catch (err: any) {
+    console.error('❌ [FileExtract] PDF extraction failed:', err);
+    return makeResult(
+      file,
+      'pdf',
+      `[Could not extract text from "${file.name}": ${err?.message || 'Invalid or corrupted PDF file'}]`
+    );
+  }
+}
+
+// ─── DOCX / DOC Extractor ────────────────────────────────────────────────────
 
 async function extractDocx(file: File): Promise<ExtractedFile> {
-  // Dynamic import so mammoth is only loaded when needed (code splitting)
-  const mammoth = await import('mammoth');
+  const mammothMod = await import('mammoth');
+  const mammoth = (mammothMod as any).default || mammothMod;
+  const JSZip = (await import('jszip')).default;
   const arrayBuffer = await file.arrayBuffer();
 
-  let result: { value: string };
+  let rawText = '';
+  const embeddedImages: string[] = [];
+
+  // 1. Try extracting text via mammoth
   try {
-    result = await mammoth.extractRawText({ arrayBuffer });
+    const result = await mammoth.extractRawText({ arrayBuffer });
+    rawText = result.value?.trim() || '';
   } catch (err) {
     console.warn('⚠️ [FileExtract] mammoth extractRawText failed, trying convertToHtml fallback:', err);
-    // Fallback: convert to HTML then strip tags
-    const htmlResult = await mammoth.convertToHtml({ arrayBuffer });
-    result = { value: stripHtml(htmlResult.value) };
+    try {
+      const htmlResult = await mammoth.convertToHtml({ arrayBuffer });
+      rawText = stripHtml(htmlResult.value)?.trim() || '';
+    } catch (_htmlErr) {
+      // ignore
+    }
   }
 
-  const rawText = result.value?.trim() || '';
-  if (!rawText) {
-    return makeResult(file, 'docx',
-      '[The DOCX file appears to be empty or contains only images/shapes with no selectable text.]');
+  // 2. Inspect ZIP for XML textboxes/tables and embedded images (word/media/*)
+  try {
+    const zip = await JSZip.loadAsync(arrayBuffer);
+
+    // Extract embedded images (e.g. code screenshots, terminal results pasted into Word)
+    const mediaFiles = Object.keys(zip.files).filter((name) =>
+      /^word\/media\/.*\.(png|jpe?g|webp|gif)$/i.test(name)
+    );
+
+    for (const mediaPath of mediaFiles.slice(0, 15)) {
+      try {
+        const ext = mediaPath.split('.').pop()?.toLowerCase() || 'png';
+        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`;
+        const base64Data = await zip.files[mediaPath].async('base64');
+        embeddedImages.push(`data:${mime};base64,${base64Data}`);
+      } catch (imgErr) {
+        console.warn('[FileExtract] Failed to read embedded docx image:', imgErr);
+      }
+    }
+
+    // Direct word/document.xml extraction if mammoth produced sparse text
+    if ((!rawText || rawText.length < 100) && zip.files['word/document.xml']) {
+      const docXml = await zip.files['word/document.xml'].async('text');
+      const xmlText = extractTextFromWordXml(docXml);
+      if (xmlText.length > rawText.length) {
+        rawText = xmlText;
+      }
+    }
+  } catch (zipErr) {
+    console.warn('⚠️ [FileExtract] Could not inspect docx zip:', zipErr);
   }
 
-  return makeResult(file, 'docx', rawText);
+  if (!rawText && embeddedImages.length === 0) {
+    rawText = extractStringsFromBinary(arrayBuffer);
+  }
+
+  if (!rawText && embeddedImages.length === 0) {
+    return makeResult(
+      file,
+      'docx',
+      '[The Word document appears to be empty with no text or images.]'
+    );
+  }
+
+  const imageNote =
+    embeddedImages.length > 0
+      ? `\n\n[Attached ${embeddedImages.length} embedded screenshot(s)/image(s) from document for visual analysis]`
+      : '';
+
+  return makeResult(
+    file,
+    'docx',
+    (rawText || '[Document contains embedded images/screenshots]') + imageNote,
+    embeddedImages
+  );
+}
+
+function extractTextFromWordXml(xml: string): string {
+  const withLineBreaks = xml
+    .replace(/<\/w:p>/g, '\n')
+    .replace(/<\/w:tr>/g, '\n')
+    .replace(/<w:tab\/>/g, '\t')
+    .replace(/<w:br\/>/g, '\n');
+
+  const runs: string[] = [];
+  const regex = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(withLineBreaks)) !== null) {
+    const text = decodeXmlEntities(match[1]);
+    if (text) runs.push(text);
+  }
+  return runs.join(' ').replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n\n').trim();
 }
 
 // ─── PPTX Extractor ──────────────────────────────────────────────────────────
@@ -131,13 +233,17 @@ async function extractPptx(file: File): Promise<ExtractedFile> {
   const JSZip = (await import('jszip')).default;
   const arrayBuffer = await file.arrayBuffer();
 
-  let zip: ReturnType<typeof JSZip.prototype.loadAsync> extends Promise<infer T> ? T : never;
+  let zip: any;
   try {
     zip = await JSZip.loadAsync(arrayBuffer);
-  } catch (err) {
-    console.error('❌ [FileExtract] PPTX zip load failed:', err);
+  } catch (_err) {
+    console.warn('⚠️ [FileExtract] ZIP parser failed on PowerPoint file, trying binary string extraction for .ppt:', file.name);
+    const fallbackText = extractStringsFromBinary(arrayBuffer);
+    if (fallbackText.trim()) {
+      return makeResult(file, 'pptx', `[Extracted content from PowerPoint presentation: "${file.name}"]\n\n${fallbackText}`);
+    }
     return makeResult(file, 'pptx',
-      `[Could not open the PPTX file. It may be corrupted or password-protected.]`);
+      `[Could not read presentation "${file.name}". Please ensure it is a valid .pptx or .ppt file.]`);
   }
 
   // Find all slide XML files and sort them numerically
@@ -164,12 +270,39 @@ async function extractPptx(file: File): Promise<ExtractedFile> {
     }
   }
 
-  if (slideTexts.length === 0) {
+  // Extract embedded slide diagrams / images
+  const embeddedImages: string[] = [];
+  try {
+    const mediaFiles = Object.keys(zip.files).filter((name) =>
+      /^ppt\/media\/.*\.(png|jpe?g|webp|gif)$/i.test(name)
+    );
+    for (const mediaPath of mediaFiles.slice(0, 15)) {
+      try {
+        const ext = mediaPath.split('.').pop()?.toLowerCase() || 'png';
+        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`;
+        const base64Data = await zip.files[mediaPath].async('base64');
+        embeddedImages.push(`data:${mime};base64,${base64Data}`);
+      } catch (imgErr) {
+        console.warn('[FileExtract] Failed to read embedded pptx image:', imgErr);
+      }
+    }
+  } catch (_e) {}
+
+  if (slideTexts.length === 0 && embeddedImages.length === 0) {
     return makeResult(file, 'pptx',
       '[The PPTX file has slides but no extractable text. It may contain only images or shapes.]');
   }
 
-  return makeResult(file, 'pptx', slideTexts.join('\n\n'));
+  const imageNote = embeddedImages.length > 0
+    ? `\n\n[Attached ${embeddedImages.length} slide image(s) / diagram(s) for visual analysis]`
+    : '';
+
+  return makeResult(
+    file,
+    'pptx',
+    (slideTexts.join('\n\n') || '[Presentation contains slide images / diagrams]') + imageNote,
+    embeddedImages
+  );
 }
 
 /** Pull text content from PPTX slide XML by extracting all <a:t> text nodes */
@@ -308,6 +441,46 @@ async function extractJson(file: File): Promise<ExtractedFile> {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+function extractStringsFromBinary(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const strings: string[] = [];
+  let currentAscii = '';
+
+  // 1. Scan for printable ASCII runs (>= 4 characters)
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i];
+    if (b >= 32 && b <= 126) {
+      currentAscii += String.fromCharCode(b);
+    } else {
+      if (currentAscii.length >= 4 && !/^[0-9._\s-]+$/.test(currentAscii)) {
+        strings.push(currentAscii.trim());
+      }
+      currentAscii = '';
+    }
+  }
+
+  // 2. Scan for UTF-16LE runs (standard encoding for legacy PowerPoint .ppt strings)
+  let currentUtf16 = '';
+  for (let i = 0; i < bytes.length - 1; i += 2) {
+    const low = bytes[i];
+    const high = bytes[i + 1];
+    if (high === 0 && low >= 32 && low <= 126) {
+      currentUtf16 += String.fromCharCode(low);
+    } else {
+      if (currentUtf16.length >= 4 && !/^[0-9._\s-]+$/.test(currentUtf16)) {
+        strings.push(currentUtf16.trim());
+      }
+      currentUtf16 = '';
+    }
+  }
+
+  // Deduplicate and filter noise
+  const unique = Array.from(new Set([...strings, ...currentUtf16])).filter(
+    (s) => s.length > 3 && !s.startsWith('Microsoft') && !s.includes('Font')
+  );
+  return unique.join('\n');
+}
+
 function stripHtml(html: string): string {
   return html
     .replace(/<br\s*\/?>/gi, '\n')
@@ -324,7 +497,7 @@ function stripHtml(html: string): string {
     .trim();
 }
 
-function makeResult(file: File, fileType: string, rawText: string): ExtractedFile {
+function makeResult(file: File, fileType: string, rawText: string, images?: string[]): ExtractedFile {
   const truncated = rawText.length > MAX_CHARS;
   const extractedText = truncated
     ? rawText.slice(0, MAX_CHARS) + `\n\n[... truncated — showing first ${MAX_CHARS.toLocaleString()} of ${rawText.length.toLocaleString()} characters]`
@@ -336,6 +509,7 @@ function makeResult(file: File, fileType: string, rawText: string): ExtractedFil
     extractedText,
     charCount: extractedText.length,
     truncated,
+    images: images && images.length > 0 ? images : undefined,
   };
 }
 

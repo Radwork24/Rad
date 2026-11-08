@@ -9,7 +9,7 @@ import {
   MaximizeIcon,
   MinimizeIcon,
   DownloadIcon,
-  CameraIcon,
+  CapturePageIcon,
   PlusIcon,
 } from './Icons';
 import type { NotebookFile, AttachedPage } from '../types/notebook';
@@ -46,12 +46,29 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
   const [selectedPages, setSelectedPages] = useState<number[]>([]);
 
   // Window geometry (floating & draggable)
+  type ResizeDirection = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
   const [windowPos, setWindowPos] = useState({ x: 0, y: 0 }); // offset from default right side
   const [windowSize, setWindowSize] = useState({ width: 560, height: 680 });
   const isDraggingRef = useRef(false);
   const isResizingRef = useRef(false);
   const dragStartRef = useRef({ mouseX: 0, mouseY: 0, initialX: 0, initialY: 0 });
-  const resizeStartRef = useRef({ mouseX: 0, mouseY: 0, initialW: 0, initialH: 0 });
+  const resizeStartRef = useRef<{
+    mouseX: number;
+    mouseY: number;
+    initialW: number;
+    initialH: number;
+    initialX: number;
+    initialY: number;
+    direction: ResizeDirection;
+  }>({
+    mouseX: 0,
+    mouseY: 0,
+    initialW: 0,
+    initialH: 0,
+    initialX: 0,
+    initialY: 0,
+    direction: 'w',
+  });
 
   // Parse total pages / slides count
   const totalPages = Math.max(
@@ -291,6 +308,50 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
   };
 
   // Window drag handlers
+  // Helper to restrict floating document viewer within safe screen boundaries
+  // Enforces clearance below top status bar (56px) so it never overlaps or gets trapped off-screen
+  const clampWindowPosition = (
+    pos: { x: number; y: number },
+    size: { width: number; height: number }
+  ) => {
+    const TOP_STATUS_BAR_CLEARANCE = 62; // Rad top status/header bar is 56px + 6px clearance
+    const SCREEN_MARGIN = 16;
+
+    const baseTop = window.innerHeight - 24 - size.height;
+    const baseLeft = window.innerWidth - 24 - size.width;
+
+    // Minimum Y: prevents the top of the viewer from going above TOP_STATUS_BAR_CLEARANCE
+    // baseTop + y >= TOP_STATUS_BAR_CLEARANCE => y >= TOP_STATUS_BAR_CLEARANCE - baseTop
+    const minY = TOP_STATUS_BAR_CLEARANCE - baseTop;
+
+    // Maximum Y: ensures the header bar is always accessible above the bottom edge
+    const maxY = Math.max(minY, window.innerHeight - 60 - baseTop);
+
+    // Minimum X: keep at least SCREEN_MARGIN px from the left edge of the viewport
+    const minX = SCREEN_MARGIN - baseLeft;
+
+    // Maximum X: keep within the right edge of the viewport
+    const maxX = 8;
+
+    return {
+      x: Math.min(Math.max(pos.x, minX), Math.max(minX, maxX)),
+      y: Math.min(Math.max(pos.y, minY), maxY),
+    };
+  };
+
+  // Ensure window stays within boundaries when opened, resized, or if viewport changes
+  useEffect(() => {
+    const handleViewportResize = () => {
+      setWindowPos((prev) => clampWindowPosition(prev, windowSize));
+    };
+
+    // Clamp immediately so any extreme up position is automatically moved back down
+    setWindowPos((prev) => clampWindowPosition(prev, windowSize));
+
+    window.addEventListener('resize', handleViewportResize);
+    return () => window.removeEventListener('resize', handleViewportResize);
+  }, [windowSize]);
+
   const handleHeaderMouseDown = (e: React.MouseEvent) => {
     if (isDockedHalf) return;
     // Don't drag if clicking buttons or inputs
@@ -309,10 +370,9 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
       if (!isDraggingRef.current) return;
       const dx = moveEvent.clientX - dragStartRef.current.mouseX;
       const dy = moveEvent.clientY - dragStartRef.current.mouseY;
-      setWindowPos({
-        x: dragStartRef.current.initialX + dx,
-        y: dragStartRef.current.initialY + dy,
-      });
+      const rawX = dragStartRef.current.initialX + dx;
+      const rawY = dragStartRef.current.initialY + dy;
+      setWindowPos(clampWindowPosition({ x: rawX, y: rawY }, windowSize));
     };
 
     const handleMouseUp = () => {
@@ -325,8 +385,8 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
     window.addEventListener('mouseup', handleMouseUp);
   };
 
-  // Resize handler (drag from bottom-left corner or left edge)
-  const handleResizeMouseDown = (e: React.MouseEvent) => {
+  // Omnidirectional resize handler (supports dragging from all 4 sides and 4 corners)
+  const handleResizeMouseDown = (direction: ResizeDirection, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     isResizingRef.current = true;
@@ -335,18 +395,49 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
       mouseY: e.clientY,
       initialW: windowSize.width,
       initialH: windowSize.height,
+      initialX: windowPos.x,
+      initialY: windowPos.y,
+      direction,
     };
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
       if (!isResizingRef.current) return;
-      // dragging left increases width
-      const dx = resizeStartRef.current.mouseX - moveEvent.clientX;
-      const dy = moveEvent.clientY - resizeStartRef.current.mouseY;
+      const { mouseX, mouseY, initialW, initialH, initialX, initialY, direction: dir } = resizeStartRef.current;
+      const dx = moveEvent.clientX - mouseX;
+      const dy = moveEvent.clientY - mouseY;
 
-      const newWidth = Math.max(420, Math.min(window.innerWidth * 0.75, resizeStartRef.current.initialW + dx));
-      const newHeight = Math.max(380, Math.min(window.innerHeight * 0.92, resizeStartRef.current.initialH + dy));
+      const minW = 380;
+      const maxW = Math.min(window.innerWidth * 0.92, 1400);
+      const minH = 320;
+      const maxH = Math.min(window.innerHeight * 0.92, 1100);
 
-      setWindowSize({ width: newWidth, height: newHeight });
+      let targetW = initialW;
+      let targetH = initialH;
+      let targetX = initialX;
+      let targetY = initialY;
+
+      // Horizontal resizing
+      if (dir.includes('w')) {
+        targetW = Math.max(minW, Math.min(maxW, initialW - dx));
+      } else if (dir.includes('e')) {
+        targetW = Math.max(minW, Math.min(maxW, initialW + dx));
+        const effectiveDeltaW = targetW - initialW;
+        targetX = initialX + effectiveDeltaW;
+      }
+
+      // Vertical resizing (clamp so north resizing does not penetrate the top status bar)
+      if (dir.includes('n')) {
+        const maxAllowedHByTop = window.innerHeight - 24 + initialY - 62;
+        targetH = Math.max(minH, Math.min(Math.min(maxH, maxAllowedHByTop), initialH - dy));
+      } else if (dir.includes('s')) {
+        targetH = Math.max(minH, Math.min(maxH, initialH + dy));
+        const effectiveDeltaH = targetH - initialH;
+        targetY = initialY + effectiveDeltaH;
+      }
+
+      const clampedPos = clampWindowPosition({ x: targetX, y: targetY }, { width: targetW, height: targetH });
+      setWindowSize({ width: targetW, height: targetH });
+      setWindowPos(clampedPos);
     };
 
     const handleMouseUp = () => {
@@ -384,10 +475,10 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
         <button
           onClick={() => handleAddCurrentPageToChat(currentPage)}
           style={styles.minimizedAddChatBtn}
-          title={`Add Page ${currentPage} picture to chat`}
+          title={`Capture Page ${currentPage} picture to chat`}
         >
-          <CameraIcon size={13} />
-          <span>+ Chat</span>
+          <CapturePageIcon size={13} />
+          <span>Capture</span>
         </button>
 
         {/* Restore / Expand */}
@@ -457,13 +548,55 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
         </div>
       )}
 
-      {/* Resize Handle on Left Edge (visible in floating mode) */}
+      {/* Omnidirectional Resize Handles: All 4 edges & 4 corners */}
       {!isDockedHalf && (
-        <div
-          onMouseDown={handleResizeMouseDown}
-          style={styles.leftResizeHandle}
-          title="Drag to resize window"
-        />
+        <>
+          {/* Edges */}
+          <div
+            onMouseDown={(e) => handleResizeMouseDown('w', e)}
+            style={styles.resizeHandleW}
+            title="Drag to resize width"
+          />
+          <div
+            onMouseDown={(e) => handleResizeMouseDown('e', e)}
+            style={styles.resizeHandleE}
+            title="Drag to resize width"
+          />
+          <div
+            onMouseDown={(e) => handleResizeMouseDown('n', e)}
+            style={styles.resizeHandleN}
+            title="Drag to resize height"
+          />
+          <div
+            onMouseDown={(e) => handleResizeMouseDown('s', e)}
+            style={styles.resizeHandleS}
+            title="Drag to resize height"
+          />
+
+          {/* Corners */}
+          <div
+            onMouseDown={(e) => handleResizeMouseDown('nw', e)}
+            style={styles.resizeHandleNW}
+            title="Drag to resize"
+          />
+          <div
+            onMouseDown={(e) => handleResizeMouseDown('ne', e)}
+            style={styles.resizeHandleNE}
+            title="Drag to resize"
+          />
+          <div
+            onMouseDown={(e) => handleResizeMouseDown('sw', e)}
+            style={styles.resizeHandleSW}
+            title="Drag to resize"
+          />
+          <div
+            onMouseDown={(e) => handleResizeMouseDown('se', e)}
+            style={styles.resizeHandleSE}
+            title="Drag to resize"
+          >
+            <div style={styles.cornerGripVisual} />
+          </div>
+        </>
       )}
 
       {/* Draggable Header Bar */}
@@ -561,7 +694,7 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
       {/* Action Bar: "Add Page to Chat" + "Select Pages" + Zoom Controls */}
       <div style={styles.actionBar}>
         <div style={styles.actionBarLeft}>
-          {/* Primary Action: Add Current Page to Chat */}
+          {/* Primary Action: Capture Current Page to Chat */}
           <button
             onClick={() => handleAddCurrentPageToChat(currentPage)}
             disabled={isCapturing}
@@ -570,10 +703,10 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
               opacity: isCapturing ? 0.7 : 1,
               cursor: isCapturing ? 'wait' : 'pointer',
             }}
-            title={`Add Page ${currentPage} picture into chat input`}
+            title={`Capture Page ${currentPage} snapshot into chat input`}
           >
-            <CameraIcon size={14} />
-            <span>{isCapturing ? 'Capturing Page...' : `Add Page ${currentPage} to Chat`}</span>
+            <CapturePageIcon size={14} />
+            <span>{isCapturing ? 'Capturing Page...' : `Capture Page ${currentPage} to Chat`}</span>
           </button>
 
           {/* Multi-page selection toggle */}
@@ -590,15 +723,15 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
             <span>{isSelectMode ? 'Cancel Selection' : 'Select Pages'}</span>
           </button>
 
-          {/* If pages selected, show Add Selected button */}
+          {/* If pages selected, show Capture Selected button */}
           {selectedPages.length > 0 && (
             <button
               onClick={handleAddSelectedPagesToChat}
               style={styles.addMultipleBtn}
-              title={`Add ${selectedPages.length} selected pages to chat`}
+              title={`Capture ${selectedPages.length} selected pages to chat`}
             >
-              <CameraIcon size={13} />
-              <span>Add {selectedPages.length} to Chat</span>
+              <CapturePageIcon size={13} />
+              <span>Capture {selectedPages.length} to Chat</span>
             </button>
           )}
         </div>
@@ -708,7 +841,7 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
                     : `Section ${currentPage}: Study Material & Equations`}
                 </h4>
                 <p>
-                  Click <strong>"Add Page {currentPage} to Chat"</strong> above to send this page picture directly into your conversation with Rad AI.
+                  Click <strong>"Capture Page {currentPage} to Chat"</strong> above to send this page picture directly into your conversation with Rad AI.
                 </p>
               </div>
               <div style={styles.fallbackSlideFooter}>
@@ -717,8 +850,8 @@ export const FloatingDocumentViewer: React.FC<FloatingDocumentViewerProps> = ({
                   onClick={() => handleAddCurrentPageToChat(currentPage)}
                   style={styles.slideAttachPromptBtn}
                 >
-                  <CameraIcon size={12} />
-                  <span>Attach Page {currentPage}</span>
+                  <CapturePageIcon size={12} />
+                  <span>Capture Page {currentPage}</span>
                 </button>
               </div>
             </div>
@@ -866,14 +999,89 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
   },
-  leftResizeHandle: {
+  resizeHandleW: {
     position: 'absolute',
     left: 0,
-    top: 0,
-    bottom: 0,
-    width: '6px',
+    top: '12px',
+    bottom: '12px',
+    width: '8px',
     cursor: 'ew-resize',
     zIndex: 50,
+  },
+  resizeHandleE: {
+    position: 'absolute',
+    right: 0,
+    top: '12px',
+    bottom: '12px',
+    width: '8px',
+    cursor: 'ew-resize',
+    zIndex: 50,
+  },
+  resizeHandleN: {
+    position: 'absolute',
+    top: 0,
+    left: '12px',
+    right: '12px',
+    height: '8px',
+    cursor: 'ns-resize',
+    zIndex: 50,
+  },
+  resizeHandleS: {
+    position: 'absolute',
+    bottom: 0,
+    left: '12px',
+    right: '12px',
+    height: '8px',
+    cursor: 'ns-resize',
+    zIndex: 50,
+  },
+  resizeHandleNW: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: '18px',
+    height: '18px',
+    cursor: 'nwse-resize',
+    zIndex: 51,
+  },
+  resizeHandleNE: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    width: '18px',
+    height: '18px',
+    cursor: 'nesw-resize',
+    zIndex: 51,
+  },
+  resizeHandleSW: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    width: '18px',
+    height: '18px',
+    cursor: 'nesw-resize',
+    zIndex: 51,
+  },
+  resizeHandleSE: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: '20px',
+    height: '20px',
+    cursor: 'nwse-resize',
+    zIndex: 51,
+    display: 'flex',
+    alignItems: 'flex-end',
+    justifyContent: 'flex-end',
+    padding: '3px',
+  },
+  cornerGripVisual: {
+    width: '6px',
+    height: '6px',
+    borderRight: '1.5px solid rgba(255, 255, 255, 0.45)',
+    borderBottom: '1.5px solid rgba(255, 255, 255, 0.45)',
+    borderRadius: '1px',
+    pointerEvents: 'none',
   },
   toastNotification: {
     position: 'absolute',

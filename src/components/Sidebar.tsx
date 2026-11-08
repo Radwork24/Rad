@@ -13,6 +13,7 @@ import {
 import type { ChatSession } from '../types/chat';
 import type { UserProfile } from '../services/userService';
 import { LoadingHint, SkeletonList } from './LoadingState';
+import { cleanChatTitle } from '../utils/messageParser';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -27,6 +28,8 @@ interface SidebarProps {
   onLogout?: () => void;
   userProfile?: UserProfile | null;
   onOpenContactUs?: () => void;
+  onOpenMeetRad?: () => void;
+  onOpenAbout?: () => void;
   isLoadingChats?: boolean;
 }
 
@@ -43,6 +46,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLogout,
   userProfile,
   onOpenContactUs,
+  onOpenMeetRad,
+  onOpenAbout,
   isLoadingChats = false,
 }) => {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
@@ -305,11 +310,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     color: isSelected ? '#ffffff' : '#b4b4b4',
                     fontWeight: isSelected ? 500 : 400,
                   }}
-                  title={chat.title}
+                  title={cleanChatTitle(chat.title)}
                 >
                   <div style={styles.chatItemLeft}>
                     <span style={styles.chatBullet}>○</span>
-                    <span style={styles.chatItemTitle}>{chat.title}</span>
+                    <span style={styles.chatItemTitle}>{cleanChatTitle(chat.title)}</span>
                   </div>
 
                   {(isHovered || isSelected) && (
@@ -322,7 +327,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       className="rad-chat-delete-btn"
                       style={styles.deleteChatBtn}
                       title="Delete conversation"
-                      aria-label={`Delete conversation ${chat.title}`}
+                      aria-label={`Delete conversation ${cleanChatTitle(chat.title)}`}
                     >
                       <TrashIcon size={13} />
                     </button>
@@ -383,6 +388,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
             </div>
             <div style={styles.popupDivider} />
+            <button
+              style={styles.popupItem}
+              onClick={() => {
+                setShowProfileMenu(false);
+                if (onOpenMeetRad) onOpenMeetRad();
+              }}
+            >
+              Meet Rad 1.1 Flash
+            </button>
+            <button
+              style={styles.popupItem}
+              onClick={() => {
+                setShowProfileMenu(false);
+                if (onOpenAbout) onOpenAbout();
+              }}
+            >
+              About Creators & Architecture
+            </button>
             <button style={styles.popupItem}>Settings</button>
             <button
               style={styles.popupItem}
@@ -424,7 +447,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div style={styles.deleteModalTextGroup}>
                 <h3 style={styles.deleteModalTitle}>Delete conversation?</h3>
                 <p style={styles.deleteModalDesc}>
-                  Are you sure you want to delete <span style={{ color: '#ece8df', fontWeight: 500 }}>"{chatToDelete.title}"</span>? This will permanently delete this conversation and all its messages from Firebase.
+                  Are you sure you want to delete <span style={{ color: '#ece8df', fontWeight: 500 }}>"{chatToDelete.title}"</span>? This will permanently delete this conversation and all its messages from Workspace.
                 </p>
               </div>
             </div>

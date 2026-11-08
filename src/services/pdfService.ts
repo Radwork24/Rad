@@ -111,6 +111,39 @@ async function loadPdfDocument(
   return pdf;
 }
 
+/**
+ * Extracts text from all pages of a PDF document.
+ */
+export async function extractAllTextFromPdf(
+  source: Blob | ArrayBuffer | string
+): Promise<{ text: string; numPages: number }> {
+  const pdf = await loadPdfDocument(source);
+  const totalPages = pdf.numPages;
+  const pageTexts: string[] = [];
+
+  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    try {
+      const page = await withTimeout(pdf.getPage(pageNum), 8000, `Getting PDF Page ${pageNum}`);
+      const textContent = await withTimeout(page.getTextContent(), 6000, `Extracting text from page ${pageNum}`);
+      const pageText = textContent.items
+        .map((item: any) => ('str' in item ? item.str : ''))
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (pageText) {
+        pageTexts.push(`--- Page ${pageNum} of ${totalPages} ---\n${pageText}`);
+      }
+    } catch (pageErr) {
+      console.warn(`[PDF_SERVICE] Could not extract text from page ${pageNum}:`, pageErr);
+    }
+  }
+
+  return {
+    text: pageTexts.join('\n\n'),
+    numPages: totalPages,
+  };
+}
+
 export interface RenderedPdfPage {
   imageDataUrl: string;
   extractedText: string;

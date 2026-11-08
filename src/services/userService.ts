@@ -35,6 +35,44 @@ function saveLocalUsers(users: Record<string, StoredUserRecord>) {
 }
 
 /**
+ * Checks whether a username is already taken (case-insensitively) in Firestore or local storage.
+ */
+export async function isUsernameTaken(usernameRaw: string): Promise<boolean> {
+  const clean = usernameRaw.trim();
+  if (!clean) return false;
+  const userKey = clean.toLowerCase();
+
+  // 1. Check local cache (case-insensitive across keys and username fields)
+  const localUsers = getLocalUsers();
+  for (const [key, record] of Object.entries(localUsers)) {
+    if (key.toLowerCase() === userKey || record.username?.toLowerCase() === userKey) {
+      return true;
+    }
+  }
+
+  // 2. Check Firebase Firestore
+  try {
+    const userDocRef = doc(db, 'users', userKey);
+    const docSnap = await getDoc(userDocRef);
+    if (docSnap.exists()) {
+      return true;
+    }
+
+    if (clean !== userKey) {
+      const rawDocRef = doc(db, 'users', clean);
+      const rawSnap = await getDoc(rawDocRef);
+      if (rawSnap.exists()) {
+        return true;
+      }
+    }
+  } catch (err) {
+    console.warn('Firebase username availability check warning:', err);
+  }
+
+  return false;
+}
+
+/**
  * Registers a new user in Firebase Firestore (and local cache).
  * Stores username, password, stream, and branch.
  */
@@ -64,32 +102,33 @@ export async function registerUser(
     password,
   };
 
-  // 1. Check if user exists in local cache first
-  const localUsers = getLocalUsers();
-  if (localUsers[userKey]) {
-    throw new Error(`Username "${username}" already exists. Please log in or choose a different username.`);
+  // 1. Strict uniqueness check across cache and Firestore
+  const taken = await isUsernameTaken(username);
+  if (taken) {
+    throw new Error(`Username "${username}" is already taken. Please choose a different username.`);
   }
 
-  // 2. Check and persist to Firebase Firestore
+  // 2. Persist to Firebase Firestore
   try {
     const userDocRef = doc(db, 'users', userKey);
     const docSnap = await getDoc(userDocRef);
 
     if (docSnap.exists()) {
-      throw new Error(`Username "${username}" already exists in Firebase. Please log in.`);
+      throw new Error(`Username "${username}" is already taken. Please choose a different username.`);
     }
 
     // Save user profile & credentials to Firestore
     await setDoc(userDocRef, record);
   } catch (err: any) {
     // If it's the duplicate username error we just threw, rethrow it
-    if (err.message && err.message.includes('already exists')) {
+    if (err.message && (err.message.includes('already taken') || err.message.includes('already exists'))) {
       throw err;
     }
     console.warn('Firebase user write notice (saved to local backup):', err?.message);
   }
 
   // Save to local cache
+  const localUsers = getLocalUsers();
   localUsers[userKey] = record;
   saveLocalUsers(localUsers);
 

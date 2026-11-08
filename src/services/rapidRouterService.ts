@@ -82,7 +82,14 @@ export const LITHOS_VISION_MODELS = [
 export interface ChatMessagePayload {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  sender?: string;
   images?: string[]; // base64 data URLs
+}
+
+export interface GroupChatContext {
+  isGroup: boolean;
+  activeSpeaker: string;
+  participants: string[];
 }
 
 export type StreamChunkCallback = (accumulatedText: string, newChunk: string) => void;
@@ -135,7 +142,56 @@ CRITICAL INSTRUCTIONS:
 
 5. FORMATTING STANDARDS:
    - Tables: Standard GFM markdown tables (|:---|:---|) with no blank lines between rows.
-   - Math: Standard LaTeX. Inline math: $E=mc^2$. Block equations: $$ \\frac{a}{b} $$.`;
+   - Math: Standard LaTeX. Inline math: $E=mc^2$. Block equations: $$ \\frac{a}{b} $$.
+
+6. DOCUMENT & FILE ATTACHMENTS (CODE, TERMINALS, SCREENSHOTS):
+   - When a user query includes an attached document or images (e.g., screenshots of Windows/Linux terminals, code, memory layouts, program outputs, or charts):
+     * CAREFULLY READ and inspect the exact text, code, commands, column values, and numbers shown in EACH image/screenshot.
+     * Provide a thorough, structured, program-by-program breakdown (e.g., Program 1, Program 2, etc.) rather than a generic superficial overview.
+     * Explain the exact values (e.g. text, data, bss, dec, hex memory segment sizes), what changed between the runs, and the underlying computer science / programming concepts illustrated.
+   - NEVER say "I cannot open or read the content of the attached file directly" or "As an AI, I do not have access to external files". You DO have direct access to the provided content and images.
+
+7. INTERACTIVE CHUNKING & PACING FOR HEAVY TASKS (CHATGPT & CLAUDE STYLE):
+   - When a user asks for heavy, large-scale deliverables (e.g. 20, 30, 50, or 100 questions, flashcards, MCQs, practice problems, test cases, or multi-chapter guides):
+     * NEVER dump 30 to 50 items all at once in a single overwhelming, cut-off response.
+     * Deliver the content in focused, high-quality batches (typically 5 questions at a time, or 5 to 10 for smaller tasks).
+     * Number them clearly (e.g. Questions 1–5).
+     * At the end of the batch, ask a natural, helpful continuation check-in:
+       "These are the first 5 questions (1–5). Should I proceed with the next 5 (questions 6–10), or would you like to solve, review, or adjust any of these first?"
+     * When the user confirms (e.g. "yes", "continue", "next", "go on", "give more"), immediately provide the next batch continuing the exact numbering (e.g. 6–10, then 11–15, etc.) until the total goal is reached.
+   - When a user asks for broad syllabus theory or exhaustive multi-topic explanations (e.g. "explain everything about operating systems", "explain all sorting algorithms in depth", or 5-page theory requests):
+     * Do NOT dump an unreadable 5-page wall of text all in one go.
+     * Provide a brief conceptual roadmap of the topics, then thoroughly explain the first core concept or module with crystal clarity, diagrams/code, and KaTeX math.
+     * End by inviting the next step:
+       "We've covered [Topic 1]. Ready to move on to [Topic 2: Next Concept], or would you like an example or deeper explanation on this first?"
+     * Proceed smoothly to the next topic as the user confirms.`;
+
+export function getSystemInstruction(groupContext?: GroupChatContext): string {
+  if (!groupContext?.isGroup || !groupContext.participants || groupContext.participants.length <= 1) {
+    return SYSTEM_INSTRUCTION;
+  }
+
+  const activeSpeaker = groupContext.activeSpeaker;
+  const otherParticipants = groupContext.participants
+    .filter((p) => p.toLowerCase() !== activeSpeaker.toLowerCase())
+    .map((p) => `@${p}`);
+
+  const participantsList = groupContext.participants.map((p) => `@${p}`).join(', ');
+
+  const groupAddendum = `
+
+8. MULTI-USER COLLABORATIVE STUDY ROOM (GROUP CHAT):
+   - You are in a live collaborative group study room with MULTIPLE students: ${participantsList}.
+   - The current turn was sent by @${activeSpeaker}.
+   - In earlier turns, other students (${otherParticipants.length > 0 ? otherParticipants.join(', ') : 'collaborators'}) have participated.
+   - GROUP AWARENESS & SPEAKER TRACKING:
+     * SPEAKER IDENTIFICATION: Every user query is attributed with the student's name (e.g. "[@${activeSpeaker}]: ..."). Always be fully conscious of WHO is speaking right now and WHO spoke previously.
+     * CONTEXTUAL THREADING: When replying to @${activeSpeaker}, connect your answer to the ongoing group discussion. If @${activeSpeaker}'s question follows up on, questions, or relates to what another student asked earlier (e.g., ${otherParticipants.length > 0 ? otherParticipants.join(' or ') : 'another student'}), naturally reference both students (e.g., "Great question @${activeSpeaker}! Building on what ${otherParticipants[0] || 'your study partner'} was asking earlier...").
+     * ADDRESS BY NAME: Address @${activeSpeaker} directly and naturally by name/handle in your response.
+     * ACTIVE STUDY FACILITATION: Act as the brilliant, encouraging thinking partner for the entire group. Support multiple threads of thought without confusing which student asked which query.`;
+
+  return SYSTEM_INSTRUCTION + groupAddendum;
+}
 
 // Cooldown tracker for rate-limited engines
 const engineCooldowns = new Map<string, number>();
@@ -158,13 +214,14 @@ function setEngineCooldown(engineId: string, durationMs: number = 60000) {
  * Builds clean, strict chat messages for text models (Cerebras & Groq).
  * Ensures only 1 system message at index 0, followed by alternating user/assistant turns.
  */
-function buildTextMessages(history: ChatMessagePayload[]): any[] {
+function buildTextMessages(history: ChatMessagePayload[], customSystemInstruction?: string): any[] {
+  const instruction = customSystemInstruction || SYSTEM_INSTRUCTION;
   const cleaned = history.filter(
     (m) => m && (m.role === 'user' || m.role === 'assistant') && Boolean(m.content && m.content.trim().length > 0)
   );
 
   const optimized = optimizeConversationContext(cleaned, {
-    maxRecentMessages: 6,
+    maxRecentMessages: 10,
     preserveFirstMessage: true,
   });
 
@@ -178,7 +235,7 @@ function buildTextMessages(history: ChatMessagePayload[]): any[] {
     }));
 
   return [
-    { role: 'system', content: SYSTEM_INSTRUCTION },
+    { role: 'system', content: instruction },
     ...sanitizedTurns,
   ];
 }
@@ -187,13 +244,14 @@ function buildTextMessages(history: ChatMessagePayload[]): any[] {
  * Builds multimodal messages for vision-capable models (LithosAI).
  * Properly handles image data URLs and prevents invalid PDF mime-types in image_url.
  */
-function buildVisionMessages(history: ChatMessagePayload[]): any[] {
+function buildVisionMessages(history: ChatMessagePayload[], customSystemInstruction?: string): any[] {
+  const instruction = customSystemInstruction || SYSTEM_INSTRUCTION;
   const cleaned = history.filter(
     (m) => m && (m.role === 'user' || m.role === 'assistant') && Boolean(m.content && m.content.trim().length > 0)
   );
 
   const optimized = optimizeConversationContext(cleaned, {
-    maxRecentMessages: 6,
+    maxRecentMessages: 10,
     preserveFirstMessage: true,
   });
 
@@ -221,12 +279,12 @@ function buildVisionMessages(history: ChatMessagePayload[]): any[] {
         });
 
         // Filter strictly valid image data URLs (jpeg, png, webp, gif)
-        // detail: 'low' (512x512 single tile, 65 tokens) delivers ~800ms-1200ms first token TTFT
+        // detail: 'high' ensures small terminal font, code, numbers, and tables are crisp and fully readable
         msg.images.forEach((url) => {
           if (url && (url.startsWith('data:image/') || url.startsWith('http'))) {
             contentParts.push({
               type: 'image_url',
-              image_url: { url, detail: 'low' },
+              image_url: { url, detail: 'high' },
             });
           }
         });
@@ -238,7 +296,7 @@ function buildVisionMessages(history: ChatMessagePayload[]): any[] {
     });
 
   return [
-    { role: 'system', content: SYSTEM_INSTRUCTION },
+    { role: 'system', content: instruction },
     ...sanitizedTurns,
   ];
 }
@@ -406,17 +464,20 @@ async function streamEngineAttempt(
 export async function requestRapidRouterChat(
   history: ChatMessagePayload[],
   _modelOverride?: string,
-  onChunk?: StreamChunkCallback
+  onChunk?: StreamChunkCallback,
+  groupContext?: GroupChatContext
 ): Promise<string> {
   const lastMsg = history[history.length - 1];
   const currentTurnHasMedia = Boolean(lastMsg?.images && lastMsg.images.length > 0);
   const anyTurnHasMedia = history.some((msg) => msg.images && msg.images.length > 0);
 
+  const systemInstruction = getSystemInstruction(groupContext);
+
   // Build engine-specific message payloads:
   //   - textOnlyMessages: Groq & Cerebras (and follow-up turns without new images)
   //   - visionMessages: OpenAI & LithosAI (optimized with detail: 'low' for ~1s TTFT)
-  const textOnlyMessages = buildTextMessages(history);
-  const visionMessages = anyTurnHasMedia ? buildVisionMessages(history) : textOnlyMessages;
+  const textOnlyMessages = buildTextMessages(history, systemInstruction);
+  const visionMessages = anyTurnHasMedia ? buildVisionMessages(history, systemInstruction) : textOnlyMessages;
 
   // Estimate total text context size (character count)
   const totalChars = history.reduce((acc, m) => acc + (m.content?.length || 0), 0);

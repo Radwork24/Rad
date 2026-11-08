@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import radLoginVideo from '../assets/rad_login.mp4';
 import radLogo from '../assets/logo.png';
 import {
@@ -8,9 +8,12 @@ import {
 import {
   registerUser,
   authenticateUser,
+  isUsernameTaken,
   type UserProfile,
 } from '../services/userService';
 import { ContactUsPage } from './ContactUsPage';
+import { MeetRadPage } from './MeetRadPage';
+import { AboutPage } from './AboutPage';
 
 interface LoginPageProps {
   onLoginSuccess: (userData: UserProfile) => void;
@@ -18,6 +21,8 @@ interface LoginPageProps {
 
 export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   const [showContactUs, setShowContactUs] = useState(false);
+  const [showMeetRad, setShowMeetRad] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
 
   // Login form state
@@ -31,12 +36,59 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   const [showSignupPassword, setShowSignupPassword] = useState(false);
   const [stream, setStream] = useState('');
   const [branch, setBranch] = useState('');
+  const [usernameStatus, setUsernameStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle');
 
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  // Debounced username availability check
+  useEffect(() => {
+    const trimmed = signupUsername.trim();
+    if (!trimmed || trimmed.length < 3) {
+      setUsernameStatus('idle');
+      return;
+    }
+
+    let isMounted = true;
+    setUsernameStatus('checking');
+
+    const timer = setTimeout(async () => {
+      try {
+        const taken = await isUsernameTaken(trimmed);
+        if (isMounted) {
+          setUsernameStatus(taken ? 'taken' : 'available');
+          if (taken) {
+            setErrorMsg(`Username "${trimmed}" is already taken. Please choose another.`);
+          } else {
+            setErrorMsg((prev) => (prev.includes('already taken') ? '' : prev));
+          }
+        }
+      } catch (err) {
+        if (isMounted) setUsernameStatus('idle');
+      }
+    }, 320);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
+  }, [signupUsername]);
+
   if (showContactUs) {
     return <ContactUsPage onBack={() => setShowContactUs(false)} />;
+  }
+
+  if (showMeetRad) {
+    return (
+      <MeetRadPage
+        onBack={() => setShowMeetRad(false)}
+        onGetStarted={() => setShowMeetRad(false)}
+      />
+    );
+  }
+
+  if (showAbout) {
+    return <AboutPage onBack={() => setShowAbout(false)} />;
   }
 
   // Handle Login submission
@@ -69,8 +121,17 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
     e.preventDefault();
     setErrorMsg('');
 
-    if (!signupUsername.trim()) {
+    const cleanUsername = signupUsername.trim();
+    if (!cleanUsername) {
       setErrorMsg('Please choose a username');
+      return;
+    }
+    if (cleanUsername.length < 3) {
+      setErrorMsg('Username must be at least 3 characters long');
+      return;
+    }
+    if (usernameStatus === 'taken') {
+      setErrorMsg(`Username "${cleanUsername}" is already taken. Please choose another.`);
       return;
     }
     if (!signupPassword.trim()) {
@@ -88,7 +149,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
 
     setIsLoading(true);
     try {
-      const profile = await registerUser(signupUsername, signupPassword, stream, branch);
+      const taken = await isUsernameTaken(cleanUsername);
+      if (taken) {
+        setUsernameStatus('taken');
+        setErrorMsg(`Username "${cleanUsername}" is already taken. Please choose a different username.`);
+        setIsLoading(false);
+        return;
+      }
+
+      const profile = await registerUser(cleanUsername, signupPassword, stream, branch);
       onLoginSuccess(profile);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Registration failed. Please try again.');
@@ -101,6 +170,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   const switchMode = (mode: 'login' | 'signup') => {
     setAuthMode(mode);
     setErrorMsg('');
+    setUsernameStatus('idle');
   };
 
   return (
@@ -112,16 +182,25 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
         </div>
 
         <div style={styles.navLinks}>
-          <button style={styles.navDropdownBtn}>
+          <button
+            style={{ ...styles.navDropdownBtn, cursor: 'pointer' }}
+            onClick={() => setShowMeetRad(true)}
+          >
             <span>Meet Rad</span>
           </button>
-          <button style={styles.navDropdownBtn}>
+          <button
+            style={{ ...styles.navDropdownBtn, cursor: 'pointer' }}
+            onClick={() => setShowMeetRad(true)}
+          >
             <span>Platform</span>
           </button>
           <button style={styles.navDropdownBtn}>
             <span>Solutions</span>
           </button>
-          <button style={styles.navDropdownBtn}>
+          <button
+            style={{ ...styles.navDropdownBtn, cursor: 'pointer' }}
+            onClick={() => setShowAbout(true)}
+          >
             <span>About</span>
           </button>
           <button
@@ -223,13 +302,39 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                 /* Signup Form with username, password, stream, branch */
                 <form onSubmit={handleSignupSubmit} style={styles.formFade}>
                   <div style={styles.inputsWrapper}>
-                    <input
-                      type="text"
-                      value={signupUsername}
-                      onChange={(e) => setSignupUsername(e.target.value)}
-                      placeholder="Username"
-                      style={styles.textInput}
-                    />
+                    <div style={styles.usernameInputContainer}>
+                      <div style={styles.usernameFieldWrapper}>
+                        <input
+                          type="text"
+                          value={signupUsername}
+                          onChange={(e) => setSignupUsername(e.target.value)}
+                          placeholder="Username"
+                          style={{
+                            ...styles.textInput,
+                            borderColor:
+                              usernameStatus === 'taken'
+                                ? 'rgba(239, 68, 68, 0.7)'
+                                : usernameStatus === 'available'
+                                ? 'rgba(52, 211, 153, 0.7)'
+                                : 'rgba(255, 255, 255, 0.1)',
+                          }}
+                        />
+                        {usernameStatus === 'checking' && (
+                          <span style={styles.usernameStatusPillChecking}>Checking...</span>
+                        )}
+                        {usernameStatus === 'available' && (
+                          <span style={styles.usernameStatusPillAvailable}>✓ Available</span>
+                        )}
+                        {usernameStatus === 'taken' && (
+                          <span style={styles.usernameStatusPillTaken}>✕ Taken</span>
+                        )}
+                      </div>
+                      {usernameStatus === 'taken' && (
+                        <span style={styles.usernameTakenHint}>
+                          @{signupUsername.trim()} is already taken. Please pick another.
+                        </span>
+                      )}
+                    </div>
 
                     <div style={styles.passwordWrapper}>
                       <input
@@ -472,6 +577,58 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: '10px',
+  },
+  usernameInputContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '5px',
+    width: '100%',
+  },
+  usernameFieldWrapper: {
+    position: 'relative',
+    display: 'flex',
+    alignItems: 'center',
+    width: '100%',
+  },
+  usernameStatusPillChecking: {
+    position: 'absolute',
+    right: '12px',
+    fontSize: '11px',
+    color: '#a1a1aa',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    padding: '2px 8px',
+    borderRadius: '10px',
+    pointerEvents: 'none',
+  },
+  usernameStatusPillAvailable: {
+    position: 'absolute',
+    right: '12px',
+    fontSize: '11px',
+    fontWeight: 600,
+    color: '#34d399',
+    backgroundColor: 'rgba(52, 211, 153, 0.14)',
+    border: '1px solid rgba(52, 211, 153, 0.3)',
+    padding: '2px 8px',
+    borderRadius: '10px',
+    pointerEvents: 'none',
+  },
+  usernameStatusPillTaken: {
+    position: 'absolute',
+    right: '12px',
+    fontSize: '11px',
+    fontWeight: 600,
+    color: '#f87171',
+    backgroundColor: 'rgba(239, 68, 68, 0.14)',
+    border: '1px solid rgba(239, 68, 68, 0.3)',
+    padding: '2px 8px',
+    borderRadius: '10px',
+    pointerEvents: 'none',
+  },
+  usernameTakenHint: {
+    fontSize: '11px',
+    color: '#f87171',
+    paddingLeft: '4px',
+    fontWeight: 500,
   },
   textInput: {
     width: '100%',

@@ -7,12 +7,17 @@ import { ChatView } from './components/ChatView';
 import { NotebooksView } from './components/NotebooksView';
 import { SharedContentsView } from './components/SharedContentsView';
 import { LofiMusicView } from './components/LofiMusicView';
+import { FloatingLofiPlayer } from './components/FloatingLofiPlayer';
+import { LofiMusicProvider, useLofiMusic } from './context/LofiMusicContext';
 import { FloatingDocumentViewer } from './components/FloatingDocumentViewer';
 import { FloatingCallWidget } from './components/FloatingCallWidget';
 import { FloatingPeerChat } from './components/FloatingPeerChat';
 import { ContactUsPage } from './components/ContactUsPage';
+import { MeetRadPage } from './components/MeetRadPage';
+import { AboutPage } from './components/AboutPage';
+import { SharedInviteLoadingView } from './components/SharedInviteLoadingView';
 import type { ChatSession, ChatMessage } from './types/chat';
-import type { NotebookFile, AttachedPage } from './types/notebook';
+import type { NotebookItem, NotebookFile, AttachedPage } from './types/notebook';
 import type { UserProfile } from './services/userService';
 import type { ActiveCallState } from './services/callService';
 import {
@@ -27,15 +32,23 @@ import {
   deleteChatSession,
   mergeChatLists,
 } from './services/chatService';
+import { subscribeToNotebooks } from './services/notebookService';
 import {
   sendChatInvite,
   subscribeToIncomingInvites,
   subscribeToSentInvites,
-  acceptChatInvite,
+  acceptInvite,
   declineChatInvite,
   type ChatInvite,
 } from './services/inviteService';
 import { setAuthCookie, getAuthCookie, clearAuthCookie } from './utils/cookieUtils';
+import { cleanChatTitle } from './utils/messageParser';
+
+function GlobalFloatingLofiPlayer({ onOpenFullView }: { onOpenFullView: () => void }) {
+  const { isFloating } = useLofiMusic();
+  if (!isFloating) return null;
+  return <FloatingLofiPlayer onOpenFullView={onOpenFullView} />;
+}
 
 export default function App() {
   // Authentication State: persists in both localStorage and 1-year Cookie so user stays logged in across visits on Vercel
@@ -50,8 +63,16 @@ export default function App() {
   });
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
+  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
   const [showContactUs, setShowContactUs] = useState(false);
+  const [showMeetRad, setShowMeetRad] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const [acceptingInvite, setAcceptingInvite] = useState<{
+    id: string;
+    fromUsername: string;
+    title?: string;
+    type: 'chat' | 'notebook' | 'document';
+  } | null>(null);
   const [activeView, setActiveView] = useState<'dashboard' | 'notebooks' | 'shared' | 'artifacts' | 'lofi'>('dashboard');
   const [chats, setChats] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -61,6 +82,10 @@ export default function App() {
   const [sentInvites, setSentInvites] = useState<ChatInvite[]>([]);
   const [isChatsLoading, setIsChatsLoading] = useState(true);
   const [isUsersLoading, setIsUsersLoading] = useState(true);
+
+  // Notebooks state synced across Notebooks and Shared Contents
+  const [notebooks, setNotebooks] = useState<NotebookItem[]>([]);
+  const [targetNotebookId, setTargetNotebookId] = useState<string | null>(null);
 
   // Floating Document Viewer & Page Picture Attachment State
   const [activeViewingFile, setActiveViewingFile] = useState<NotebookFile | null>(null);
@@ -98,13 +123,18 @@ export default function App() {
     if (!currentUser?.username) {
       setIncomingInvites([]);
       setSentInvites([]);
+      setNotebooks([]);
       return;
     }
     const unsubIncoming = subscribeToIncomingInvites(currentUser.username, setIncomingInvites);
     const unsubSent = subscribeToSentInvites(currentUser.username, setSentInvites);
+    const unsubNotebooks = subscribeToNotebooks(currentUser.username, (userNotebooks) => {
+      setNotebooks(userNotebooks);
+    });
     return () => {
       unsubIncoming();
       unsubSent();
+      unsubNotebooks();
     };
   }, [currentUser?.username]);
 
@@ -221,11 +251,9 @@ export default function App() {
     const userMsgId = 'msg_' + now;
     const aiMsgId = 'msg_ai_' + (now + 1);
 
-    let title = promptText.trim();
-    if (!title && images && images.length > 0) {
+    let title = cleanChatTitle(promptText);
+    if ((!title || title === 'New Chat') && images && images.length > 0) {
       title = 'Image analysis';
-    } else if (title.length > 36) {
-      title = title.substring(0, 36) + '...';
     }
 
     const optimisticUserMsg: ChatMessage = {
@@ -386,14 +414,26 @@ export default function App() {
     const cid = specificChatId || activeChatId;
     const targetChat = cid
       ? chats.find((c) => c.id === cid) || (pendingChat?.id === cid ? pendingChat : undefined)
-      : chats[0];
+      : undefined;
+
+    // A user cannot invite other users into an empty new chat; they must start a conversation first or select a recent chat
+    const hasConversation = Boolean(
+      targetChat &&
+      targetChat.messages &&
+      targetChat.messages.some((m) => m.role === 'user' && m.content.trim().length > 0)
+    );
+
+    if (!targetChat || !hasConversation) {
+      alert('You cannot invite users into an empty new chat. Please start a conversation or select a recent chat first.');
+      return;
+    }
 
     try {
       const invite = await sendChatInvite(
         currentUser.username,
         targetUsername,
-        cid || targetChat?.id,
-        targetChat?.title
+        targetChat.id,
+        targetChat.title
       );
       if (invite.chatId) {
         setActiveChatId(invite.chatId);
@@ -404,15 +444,28 @@ export default function App() {
   };
 
   const handleAcceptInvite = async (invite: ChatInvite) => {
+    setAcceptingInvite({
+      id: invite.id,
+      fromUsername: invite.fromUsername,
+      title: invite.chatTitle || invite.notebookTitle || invite.fileName,
+      type: invite.type || 'chat',
+    });
     try {
-      const session = await acceptChatInvite(invite);
-      setChats((prev) => mergeChatLists(prev, [session]));
-      setPendingChat(session);
-      setActiveChatId(session.id);
-      setActiveView('dashboard');
+      const result = await acceptInvite(invite);
+      if (result.session) {
+        setChats((prev) => mergeChatLists(prev, [result.session!]));
+        setPendingChat(result.session);
+        setActiveChatId(result.session.id);
+        setActiveView('dashboard');
+      } else if (result.notebook) {
+        setTargetNotebookId(result.notebook.id);
+        setActiveView('notebooks');
+      }
     } catch (err: any) {
       console.error('Failed to accept invite:', err);
-      alert(err?.message || 'Could not open the shared chat.');
+      alert(err?.message || 'Could not open the shared content.');
+    } finally {
+      setAcceptingInvite(null);
     }
   };
 
@@ -446,6 +499,25 @@ export default function App() {
     return <ContactUsPage onBack={() => setShowContactUs(false)} currentUser={currentUser} />;
   }
 
+  if (showMeetRad) {
+    return (
+      <MeetRadPage
+        onBack={() => setShowMeetRad(false)}
+        currentUser={currentUser}
+        onGetStarted={() => setShowMeetRad(false)}
+      />
+    );
+  }
+
+  if (showAbout) {
+    return (
+      <AboutPage
+        onBack={() => setShowAbout(false)}
+        currentUser={currentUser}
+      />
+    );
+  }
+
   const activeChat = chats.find((c) => c.id === activeChatId) || (pendingChat?.id === activeChatId ? pendingChat : undefined);
 
   // Collaborators in the CURRENT active shared chat (not global — scoped to this chat only)
@@ -456,7 +528,8 @@ export default function App() {
       : [];
 
   return (
-    <div style={styles.appWrapper}>
+    <LofiMusicProvider>
+      <div style={styles.appWrapper}>
       <Sidebar
         isOpen={isSidebarOpen}
         onToggle={handleToggleSidebar}
@@ -475,10 +548,20 @@ export default function App() {
         onLogout={handleLogout}
         userProfile={currentUser}
         onOpenContactUs={() => setShowContactUs(true)}
+        onOpenMeetRad={() => setShowMeetRad(true)}
+        onOpenAbout={() => setShowAbout(true)}
         isLoadingChats={isChatsLoading}
       />
 
-      {activeChatId && activeChat ? (
+      {acceptingInvite ? (
+        <SharedInviteLoadingView
+          isSidebarOpen={isSidebarOpen}
+          onToggleSidebar={handleToggleSidebar}
+          isRightSidebarOpen={isRightSidebarOpen}
+          onToggleRightSidebar={handleToggleRightSidebar}
+          acceptingInvite={acceptingInvite}
+        />
+      ) : activeChatId && activeChat ? (
         <ChatView
           chat={activeChat}
           isSidebarOpen={isSidebarOpen}
@@ -510,6 +593,12 @@ export default function App() {
           onInviteUser={handleInviteUser}
           pendingInviteUsernames={sentInvites.map((invite) => invite.toUsername)}
           isLoading={isChatsLoading || isUsersLoading}
+          notebooks={notebooks}
+          onOpenNotebook={(id) => {
+            setTargetNotebookId(id);
+            setActiveView('notebooks');
+          }}
+          onOpenDocumentViewer={handleOpenDocumentViewer}
         />
       ) : activeView === 'lofi' ? (
         <LofiMusicView
@@ -526,6 +615,10 @@ export default function App() {
           onToggleRightSidebar={handleToggleRightSidebar}
           username={currentUser.username}
           onOpenDocumentViewer={handleOpenDocumentViewer}
+          allUsers={allUsers}
+          sentInvites={sentInvites}
+          targetNotebookId={targetNotebookId}
+          onOpenedNotebookChange={(id) => setTargetNotebookId(id)}
         />
       ) : (
         <Dashboard
@@ -547,7 +640,6 @@ export default function App() {
         currentUsername={currentUser.username}
         activeChat={activeChat}
         onInviteUser={handleInviteUser}
-        onStartCall={handleStartCall}
         incomingInvites={incomingInvites}
         pendingInviteUsernames={sentInvites
           .filter((invite) => !activeChatId || invite.chatId === activeChatId)
@@ -587,10 +679,14 @@ export default function App() {
             (u) => u.username.toLowerCase().trim() === collaborator.toLowerCase().trim()
           )}
           bottomOffset={24 + idx * 72}
+          onStartCall={handleStartCall}
         />
       ))}
+      {/* Floating Lofi Music Player — persists seamlessly across all tabs and study sessions */}
+      <GlobalFloatingLofiPlayer onOpenFullView={() => setActiveView('lofi')} />
     </div>
-  );
+  </LofiMusicProvider>
+);
 }
 
 const styles: Record<string, React.CSSProperties> = {

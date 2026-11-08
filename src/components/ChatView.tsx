@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { compressImageDataUrl } from '../utils/imageUtils';
 import { extractTextFromFile, isSupportedDocument, type ExtractedFile } from '../services/fileExtractService';
 import type { ChatSession } from '../types/chat';
@@ -14,9 +14,11 @@ import {
   WaveformIcon,
   FilePdfIcon,
   FilePptIcon,
+  BookOpenIcon,
   ReplyIcon,
   UserPlusIcon,
 } from './Icons';
+import { parseUserMessage, cleanChatTitle } from '../utils/messageParser';
 import type { AttachedPage } from '../types/notebook';
 
 interface ChatViewProps {
@@ -66,7 +68,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   chat,
   isSidebarOpen,
   onToggleSidebar,
-  isRightSidebarOpen = true,
+  isRightSidebarOpen = false,
   onToggleRightSidebar,
   onSendMessage,
   attachedPages = [],
@@ -88,12 +90,59 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [isExtractingFile, setIsExtractingFile] = useState(false);
   const recognitionRef = useRef<any>(null);
 
+  const [activeQueryTurn, setActiveQueryTurn] = useState<number>(1);
+
+  // Fixed-position tooltip for bubble navigator (bypasses overflow clipping)
+  const [bubbleTooltip, setBubbleTooltip] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    turn: { turnNum: number; queryText: string; sender: string; attachedDocNames?: string[]; hasImages?: boolean } | null;
+  }>({ visible: false, x: 0, y: 0, turn: null });
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const stickToBottomRef = useRef(true);
   const isSubmittingRef = useRef(false);
+
+  // Extract numbered turns of user queries for quick bullet bubble jump & rich hover preview
+  const queryTurns = useMemo(() => {
+    const turns: {
+      userMsgId: string;
+      turnNum: number;
+      sender: string;
+      queryText: string;
+      previewSnippet: string;
+      attachedDocNames: string[];
+      hasImages: boolean;
+      createdAt: number;
+    }[] = [];
+    let count = 0;
+
+    chat.messages.forEach((msg) => {
+      if (msg.role === 'user') {
+        count++;
+        const parsed = parseUserMessage(msg.content);
+        const clean = (parsed.cleanText || msg.content || '').trim();
+        const docNames = parsed.attachedDocs.map((d) => d.fileName);
+
+        turns.push({
+          userMsgId: msg.id,
+          turnNum: count,
+          sender: msg.sender || (chat.creator ? chat.creator : currentUsername),
+          queryText: clean,
+          previewSnippet: clean || (docNames.length > 0 ? docNames[0] : `Query #${count}`),
+          attachedDocNames: docNames,
+          hasImages: Boolean(msg.images && msg.images.length > 0),
+          createdAt: msg.createdAt,
+        });
+      }
+    });
+
+    return turns;
+  }, [chat.messages, chat.creator, currentUsername]);
 
   const lastMsg = chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : null;
   const isAwaitingAi =
@@ -113,6 +162,42 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const isNearBottom = scrollHeight - scrollTop - clientHeight < 120;
     stickToBottomRef.current = isNearBottom;
     setShowScrollBottom(!isNearBottom);
+
+    // Track which user query is currently active/visible in viewport
+    if (queryTurns.length > 0) {
+      const containerRect = scrollContainerRef.current.getBoundingClientRect();
+      let currentActive = queryTurns[0].turnNum;
+
+      for (let i = 0; i < queryTurns.length; i++) {
+        const turn = queryTurns[i];
+        const el = document.getElementById(`query-turn-${turn.turnNum}`);
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          if (rect.top <= containerRect.top + 160) {
+            currentActive = turn.turnNum;
+          }
+        }
+      }
+      setActiveQueryTurn(currentActive);
+    }
+  };
+
+  const scrollToQuery = (turnNum: number) => {
+    setActiveQueryTurn(turnNum);
+    const element = document.getElementById(`query-turn-${turnNum}`);
+    if (element) {
+      stickToBottomRef.current = false;
+      element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      // Trigger attention glow pulse on the jumped query bubble
+      const bubbleEl = document.getElementById(`query-bubble-${turnNum}`) || element;
+      bubbleEl.classList.remove('rad-query-pulse');
+      void bubbleEl.offsetWidth; // Reflow
+      bubbleEl.classList.add('rad-query-pulse');
+      setTimeout(() => {
+        bubbleEl.classList.remove('rad-query-pulse');
+      }, 1800);
+    }
   };
 
   const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
@@ -381,12 +466,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
       text = 'Please analyze the attached file(s) and image(s).';
     }
 
-    // Collect images from BOTH attached PDF pages AND pasted images
+    // Collect images from attached PDF pages, pasted images, AND embedded document images/screenshots
     const pageImages = attachedPages
       .map((p) => p.imageDataUrl)
       .filter((url): url is string => Boolean(url));
+    const docEmbeddedImages = attachedDocuments
+      .flatMap((doc) => doc.images || []);
 
-    const imageUrls = [...pageImages, ...pastedImages.map((img) => img.dataUrl)];
+    const imageUrls = [
+      ...pageImages,
+      ...pastedImages.map((img) => img.dataUrl),
+      ...docEmbeddedImages,
+    ];
 
     // Append extracted text from PDF notebook pages
     const extractedTextSections = attachedPages
@@ -398,17 +489,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
       text = text ? `${text}\n\n${extractedTextSections}` : extractedTextSections;
     }
 
-    // Inject extracted document text (DOCX / PPTX / XLSX / CSV / TXT / code)
+    // Inject extracted document content (DOCX / PPTX / XLSX / CSV / TXT / code)
     if (hasDocs) {
       const docSections = attachedDocuments
         .map((doc) => {
           const typeLabel = doc.fileType.toUpperCase();
-          return `[Attached ${typeLabel} File: "${doc.fileName}"${doc.truncated ? ' — truncated to first 80,000 characters' : ''}]\n\n${doc.extractedText}`;
+          return `--- BEGIN DOCUMENT CONTENT: "${doc.fileName}" (${typeLabel}) ---\n${doc.extractedText}\n--- END DOCUMENT CONTENT ---`;
         })
-        .join('\n\n---\n\n');
+        .join('\n\n');
 
-      text = text ? `${docSections}\n\n---\n\n${text}` : docSections;
-      console.log(`📄 [Rad ChatView] Injecting ${attachedDocuments.length} extracted doc(s) into message (${docSections.length} chars)`);
+      const userText = inputMessage.trim();
+      text = userText
+        ? `${docSections}\n\nUser Question about the above document: ${userText}`
+        : `${docSections}\n\nPlease thoroughly analyze, explain, and summarize the contents of the document provided above.`;
+      console.log(`📄 [Rad ChatView] Injecting ${attachedDocuments.length} extracted doc(s) into message (${docSections.length} chars, ${docEmbeddedImages.length} embedded images)`);
     }
 
     console.log('📤 [Rad ChatView] Submitting message to onSendMessage:', {
@@ -442,7 +536,244 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   return (
     <div style={styles.chatViewWrapper}>
-      <style>{`@keyframes micPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.6;transform:scale(1.18)} }`}</style>
+      <style>{`
+        @keyframes micPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.6;transform:scale(1.18)} }
+
+        @keyframes responsePulseGlow {
+          0% {
+            box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+            border-radius: 12px;
+          }
+          25% {
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7), 0 0 24px rgba(255, 255, 255, 0.35);
+            background-color: rgba(255, 255, 255, 0.04);
+            border-radius: 12px;
+          }
+          100% {
+            box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+            background-color: transparent;
+            border-radius: 12px;
+          }
+        }
+        .rad-response-pulse {
+          animation: responsePulseGlow 1.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+
+        @keyframes queryPulseGlow {
+          0% {
+            box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+          }
+          25% {
+            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.8), 0 0 24px rgba(255, 255, 255, 0.4);
+            background-color: rgba(255, 255, 255, 0.05);
+          }
+          100% {
+            box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+            background-color: transparent;
+          }
+        }
+        .rad-query-pulse {
+          animation: queryPulseGlow 1.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+
+        /* Floating Vertical Water-Droplet Bullet Dock - No outer outline, seamless floating */
+        .rad-droplet-dock {
+          position: absolute;
+          right: 18px;
+          top: 50%;
+          transform: translateY(-50%);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 10px;
+          padding: 6px 4px;
+          background: transparent;
+          border: none;
+          box-shadow: none;
+          backdrop-filter: none;
+          -webkit-backdrop-filter: none;
+          z-index: 35;
+          max-height: calc(100% - 160px);
+          overflow-y: auto;
+          scrollbar-width: none;
+        }
+        .rad-droplet-dock::-webkit-scrollbar {
+          display: none;
+        }
+
+        .rad-bubble-wrapper {
+          position: relative;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        /* Droplet Bubble - Completely transparent background with glowing white outline */
+        .rad-drop-bubble {
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: transparent;
+          border: 1px solid rgba(255, 255, 255, 0.3);
+          box-shadow: 
+            0 0 6px rgba(255, 255, 255, 0.15),
+            inset 0 0 4px rgba(255, 255, 255, 0.12);
+          backdrop-filter: blur(6px);
+          -webkit-backdrop-filter: blur(6px);
+          color: rgba(255, 255, 255, 0.72);
+          font-size: 11.5px;
+          font-weight: 650;
+          cursor: pointer;
+          transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+          user-select: none;
+          outline: none;
+          padding: 0;
+          position: relative;
+        }
+
+        .rad-drop-bubble:hover {
+          transform: scale(1.18);
+          color: #ffffff;
+          border-color: #ffffff;
+          box-shadow: 
+            0 0 12px rgba(255, 255, 255, 0.8),
+            0 0 20px rgba(255, 255, 255, 0.35),
+            inset 0 0 6px rgba(255, 255, 255, 0.35);
+        }
+
+        /* Selected / Active State - Pure Glowing White, Zero Orange */
+        .rad-drop-bubble.active {
+          background: transparent;
+          border: 1.5px solid #ffffff;
+          color: #ffffff;
+          box-shadow: 
+            0 0 14px rgba(255, 255, 255, 0.95),
+            0 0 28px rgba(255, 255, 255, 0.5),
+            inset 0 0 8px rgba(255, 255, 255, 0.45);
+          transform: scale(1.12);
+          text-shadow: 0 0 8px rgba(255, 255, 255, 0.9);
+        }
+
+        .rad-bubble-sheen {
+          position: absolute;
+          top: 3px;
+          left: 6px;
+          width: 9px;
+          height: 4px;
+          border-radius: 50%;
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.65) 0%, rgba(255, 255, 255, 0) 100%);
+          pointer-events: none;
+        }
+
+        .rad-bubble-num {
+          position: relative;
+          z-index: 2;
+          font-family: inherit;
+          line-height: 1;
+        }
+
+        .rad-bubble-tooltip {
+          position: absolute;
+          right: 44px;
+          top: 50%;
+          transform: translateY(-50%) translateX(6px);
+          background: rgba(14, 14, 16, 0.96);
+          border: 1px solid rgba(255, 255, 255, 0.16);
+          border-radius: 12px;
+          padding: 10px 14px;
+          font-size: 11.5px;
+          color: #ece8df;
+          width: 270px;
+          max-width: 320px;
+          pointer-events: none;
+          opacity: 0;
+          transition: opacity 0.16s ease, transform 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+          box-shadow: 0 12px 32px rgba(0, 0, 0, 0.8), 0 0 16px rgba(255, 255, 255, 0.05);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          z-index: 60;
+          text-align: left;
+        }
+
+        .rad-bubble-wrapper:hover .rad-bubble-tooltip {
+          opacity: 1;
+          transform: translateY(-50%) translateX(0);
+        }
+
+        .rad-bubble-tooltip::after {
+          content: '';
+          position: absolute;
+          right: -5px;
+          top: 50%;
+          transform: translateY(-50%) rotate(45deg);
+          width: 8px;
+          height: 8px;
+          background: rgba(14, 14, 16, 0.96);
+          border-right: 1px solid rgba(255, 255, 255, 0.16);
+          border-top: 1px solid rgba(255, 255, 255, 0.16);
+        }
+
+        .rad-bubble-tooltip-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 6px;
+          padding-bottom: 5px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .rad-bubble-tooltip-title {
+          font-weight: 700;
+          color: #ffffff;
+          font-size: 11px;
+          letter-spacing: -0.2px;
+        }
+
+        .rad-bubble-tooltip-sender {
+          font-size: 10.5px;
+          color: rgba(255, 255, 255, 0.5);
+          font-weight: 500;
+        }
+
+        .rad-bubble-tooltip-text {
+          color: rgba(255, 255, 255, 0.85);
+          display: -webkit-box;
+          -webkit-line-clamp: 4;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
+          line-height: 1.45;
+          font-size: 12px;
+          word-break: break-word;
+        }
+
+        .rad-bubble-tooltip-docs {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-top: 6px;
+          padding-top: 5px;
+          border-top: 1px solid rgba(255, 255, 255, 0.06);
+          font-size: 10.5px;
+          color: rgba(160, 200, 255, 0.95);
+        }
+
+        .rad-bubble-tooltip-hint {
+          display: block;
+          font-size: 9.5px;
+          color: rgba(255, 255, 255, 0.4);
+          margin-top: 6px;
+          text-align: right;
+        }
+
+        @media (max-width: 680px) {
+          .rad-droplet-dock {
+            display: none;
+          }
+        }
+      `}</style>
       {/* Top Header */}
       <header style={styles.topHeader}>
         <div style={styles.headerLeft}>
@@ -458,7 +789,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
           {/* Conversation Title Dropdown */}
           <button style={styles.titleDropdownBtn}>
-            <span style={styles.chatTitleText}>{chat.title}</span>
+            <span style={styles.chatTitleText}>{cleanChatTitle(chat.title)}</span>
             <ChevronDownIcon size={13} />
           </button>
 
@@ -521,7 +852,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
         style={styles.scrollArea}
       >
         <div style={styles.messagesContainer}>
-          {chat.messages.map((msg) => {
+          {(() => {
+            let assistantTurnCount = 0;
+            let queryTurnCount = 0;
+            return chat.messages.map((msg) => {
             // 1. System Invite / Join Notification Message
             if (msg.sender === 'system' || msg.id.startsWith('msg_invite_')) {
               return (
@@ -540,6 +874,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
             // 2. User Query Message
             if (msg.role === 'user') {
+              queryTurnCount++;
+              const turnNum = queryTurnCount;
               const senderName = msg.sender || (chat.creator ? chat.creator : currentUsername);
               const isSelf = senderName.toLowerCase().trim() === (currentUsername || '').toLowerCase().trim();
               const userProfile = allUsers?.find(
@@ -547,10 +883,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
               );
               const senderInitial = senderName.charAt(0).toUpperCase();
               const userColor = getUserColor(senderName);
+              const parsed = parseUserMessage(msg.content);
 
               return (
                 <div
                   key={msg.id}
+                  id={`query-turn-${turnNum}`}
                   style={isSelf ? styles.userRowSelf : styles.userRowOther}
                 >
                   {/* Sender Header Badge */}
@@ -576,7 +914,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </div>
 
                   {/* Query Bubble */}
-                  <div style={isSelf ? styles.userBubbleSelf : styles.userBubbleOther}>
+                  <div
+                    id={`query-bubble-${turnNum}`}
+                    style={isSelf ? styles.userBubbleSelf : styles.userBubbleOther}
+                  >
                     {/* Attached Images in user message */}
                     {msg.images && msg.images.length > 0 && (
                       <div style={styles.messageImagesRow}>
@@ -599,20 +940,82 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         ))}
                       </div>
                     )}
-                    {msg.content}
+
+                    {/* Attached Document Chips in User Bubble */}
+                    {parsed.attachedDocs.length > 0 && (
+                      <div style={styles.bubbleAttachedDocsRow}>
+                        {parsed.attachedDocs.map((doc, idx) => {
+                          const isPdf = doc.fileType === 'PDF';
+                          const isPpt = doc.fileType === 'PPT' || doc.fileType === 'PPTX';
+                          const isDocx = doc.fileType === 'DOCX' || doc.fileType === 'DOC';
+
+                          return (
+                            <div key={idx} style={styles.bubbleDocChip} title={doc.fileName}>
+                              <div
+                                style={{
+                                  ...styles.bubbleDocIconWrap,
+                                  backgroundColor: isPdf
+                                    ? 'rgba(239, 68, 68, 0.2)'
+                                    : isPpt
+                                    ? 'rgba(249, 115, 22, 0.2)'
+                                    : isDocx
+                                    ? 'rgba(59, 130, 246, 0.2)'
+                                    : 'rgba(255, 255, 255, 0.1)',
+                                  color: isPdf
+                                    ? '#f87171'
+                                    : isPpt
+                                    ? '#fb923c'
+                                    : isDocx
+                                    ? '#60a5fa'
+                                    : '#ffffff',
+                                }}
+                              >
+                                {isPdf ? (
+                                  <FilePdfIcon size={14} />
+                                ) : isPpt ? (
+                                  <FilePptIcon size={14} />
+                                ) : (
+                                  <BookOpenIcon size={14} />
+                                )}
+                              </div>
+                              <div style={styles.bubbleDocInfo}>
+                                <span style={styles.bubbleDocName}>{doc.fileName}</span>
+                                <span style={styles.bubbleDocType}>
+                                  {doc.pageNum ? `Page ${doc.pageNum} · ` : ''}
+                                  {doc.fileType}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* User Prompt Text */}
+                    {parsed.cleanText ? (
+                      <div style={styles.bubblePromptText}>{parsed.cleanText}</div>
+                    ) : parsed.attachedDocs.length === 0 ? (
+                      <div style={styles.bubblePromptText}>{msg.content}</div>
+                    ) : null}
                   </div>
                 </div>
               );
             }
 
             // 3. AI Assistant Response Message
+            assistantTurnCount++;
+            const turnNum = assistantTurnCount;
             const replyTo = msg.replyToUser;
             const isReplyingToSelf =
               replyTo &&
               replyTo.toLowerCase().trim() === (currentUsername || '').toLowerCase().trim();
 
             return (
-              <div key={msg.id} style={styles.assistantRow}>
+              <div
+                key={msg.id}
+                id={`response-turn-${turnNum}`}
+                style={styles.assistantRow}
+              >
                 {/* AI Response Header with Rad symbol + Replying badge */}
                 <div style={styles.assistantHeaderBar}>
                   <div style={styles.assistantHeaderLeft}>
@@ -659,7 +1062,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </div>
               </div>
             );
-          })}
+          });
+        })()}
 
           {/* Loading indicator only if the very last message is a user message without an assistant placeholder */}
           {chat.messages.length > 0 &&
@@ -687,13 +1091,120 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </button>
       )}
 
+      {/* Floating Vertical Water-Droplet Bullet Navigator */}
+      {queryTurns.length >= 1 && (
+        <aside className="rad-droplet-dock" aria-label="Jump to query">
+          {queryTurns.map((turn) => {
+            const isActive = activeQueryTurn === turn.turnNum;
+            return (
+              <div key={turn.userMsgId} className="rad-bubble-wrapper">
+                <button
+                  type="button"
+                  className={`rad-drop-bubble ${isActive ? 'active' : ''}`}
+                  onClick={() => scrollToQuery(turn.turnNum)}
+                  aria-label={`Jump to query #${turn.turnNum}: ${turn.previewSnippet}`}
+                  onMouseEnter={(e) => {
+                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                    setBubbleTooltip({
+                      visible: true,
+                      x: rect.left,
+                      y: rect.top + rect.height / 2,
+                      turn: {
+                        turnNum: turn.turnNum,
+                        queryText: turn.queryText || '',
+                        sender: turn.sender,
+                        attachedDocNames: turn.attachedDocNames,
+                        hasImages: turn.hasImages,
+                      },
+                    });
+                  }}
+                  onMouseLeave={() => setBubbleTooltip(prev => ({ ...prev, visible: false }))}
+                >
+                  <span className="rad-bubble-sheen" />
+                  <span className="rad-bubble-num">{turn.turnNum}</span>
+                </button>
+              </div>
+            );
+          })}
+        </aside>
+      )}
+
+      {/* Fixed-position bubble tooltip — renders outside overflow containers */}
+      {bubbleTooltip.visible && bubbleTooltip.turn && (() => {
+        const t = bubbleTooltip.turn;
+        const isSelf = t.sender.toLowerCase().trim() === (currentUsername || '').toLowerCase().trim();
+        const preview = t.queryText.length > 150 ? t.queryText.slice(0, 150) + '…' : t.queryText;
+        return (
+          <div
+            style={{
+              position: 'fixed',
+              right: `calc(100vw - ${bubbleTooltip.x}px + 12px)`,
+              top: bubbleTooltip.y,
+              transform: 'translateY(-50%)',
+              background: 'rgba(14, 14, 16, 0.97)',
+              border: '1px solid rgba(255, 255, 255, 0.16)',
+              borderRadius: 12,
+              padding: '10px 14px',
+              fontSize: 11.5,
+              color: '#ece8df',
+              width: 270,
+              pointerEvents: 'none',
+              boxShadow: '0 12px 32px rgba(0,0,0,0.85), 0 0 16px rgba(255,255,255,0.05)',
+              backdropFilter: 'blur(16px)',
+              WebkitBackdropFilter: 'blur(16px)',
+              zIndex: 99999,
+              textAlign: 'left',
+            }}
+          >
+            {/* Arrow pointing right */}
+            <div style={{
+              position: 'absolute',
+              right: -5,
+              top: '50%',
+              transform: 'translateY(-50%) rotate(45deg)',
+              width: 8,
+              height: 8,
+              background: 'rgba(14,14,16,0.97)',
+              borderRight: '1px solid rgba(255,255,255,0.16)',
+              borderTop: '1px solid rgba(255,255,255,0.16)',
+            }} />
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, paddingBottom: 5, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+              <span style={{ fontWeight: 700, color: '#fff', fontSize: 11, letterSpacing: -0.2 }}>Query {t.turnNum}</span>
+              <span style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.5)', fontWeight: 500 }}>
+                {isSelf ? 'You' : `@${t.sender}`}
+              </span>
+            </div>
+
+            <span style={{ color: 'rgba(255,255,255,0.85)', display: 'block', lineHeight: 1.45, fontSize: 12, wordBreak: 'break-word' }}>
+              {preview || `Query #${t.turnNum}`}
+            </span>
+
+            {t.attachedDocNames && t.attachedDocNames.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, paddingTop: 5, borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 10.5, color: 'rgba(160,200,255,0.95)' }}>
+                <span>📄 {t.attachedDocNames[0]}</span>
+                {t.attachedDocNames.length > 1 && <span>+{t.attachedDocNames.length - 1} more</span>}
+              </div>
+            )}
+
+            {t.hasImages && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, paddingTop: 5, borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 10.5, color: 'rgba(160,200,255,0.95)' }}>
+                <span>🖼️ Image attached</span>
+              </div>
+            )}
+
+
+          </div>
+        );
+      })()}
+
       {/* Docked Bottom Chat Input Bar */}
       <div style={styles.bottomBarContainer}>
         {/* Hidden File Picker — accepts images AND all document types */}
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*,.docx,.pptx,.xlsx,.xls,.csv,.txt,.md,.json,.py,.js,.ts,.jsx,.tsx,.java,.c,.cpp,.h,.cs,.go,.rs,.rb,.php,.swift,.kt,.dart,.sql,.sh,.yml,.yaml,.toml,.html,.htm,.css,.xml"
+          accept="image/*,.pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.csv,.txt,.md,.json,.py,.js,.ts,.jsx,.tsx,.java,.c,.cpp,.h,.cs,.go,.rs,.rb,.php,.swift,.kt,.dart,.sql,.sh,.yml,.yaml,.toml,.html,.htm,.css,.xml"
           multiple
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
@@ -752,7 +1263,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </div>
             )}
             {attachedDocuments.map((doc, idx) => {
-              const icon = doc.fileType === 'docx' ? '📝'
+              const icon = doc.fileType === 'pdf' ? '📕'
+                : doc.fileType === 'docx' ? '📝'
                 : doc.fileType === 'pptx' ? '📊'
                 : (doc.fileType === 'xlsx' || doc.fileType === 'csv') ? '📋'
                 : doc.fileType === 'json' ? '🔧'
@@ -1301,11 +1813,65 @@ const styles: Record<string, React.CSSProperties> = {
     wordBreak: 'break-word',
     boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
   },
+  bubbleAttachedDocsRow: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    marginBottom: '8px',
+  },
+  bubbleDocChip: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '7px 12px',
+    borderRadius: '8px',
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    border: '1px solid rgba(255, 255, 255, 0.12)',
+    maxWidth: '100%',
+    overflow: 'hidden',
+  },
+  bubbleDocIconWrap: {
+    width: '26px',
+    height: '26px',
+    borderRadius: '6px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  bubbleDocInfo: {
+    display: 'flex',
+    flexDirection: 'column',
+    minWidth: 0,
+    overflow: 'hidden',
+  },
+  bubbleDocName: {
+    fontSize: '13px',
+    fontWeight: 500,
+    color: '#ffffff',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  bubbleDocType: {
+    fontSize: '10px',
+    color: 'rgba(255, 255, 255, 0.45)',
+    fontWeight: 600,
+    letterSpacing: '0.03em',
+  },
+  bubblePromptText: {
+    fontSize: '14px',
+    lineHeight: '1.5',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  },
   assistantRow: {
     display: 'flex',
     flexDirection: 'column',
     width: '100%',
     padding: '4px 0',
+    scrollMarginTop: '72px',
+    transition: 'background-color 0.4s ease, box-shadow 0.4s ease',
   },
   assistantHeaderBar: {
     display: 'flex',

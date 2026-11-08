@@ -6,6 +6,7 @@ import {
   ArrowUpIcon,
   VideoIcon,
   VideoOffIcon,
+  PhoneIcon,
   PhoneOffIcon,
   MicrophoneIcon,
   MicOffIcon,
@@ -35,6 +36,7 @@ interface FloatingPeerChatProps {
   collaboratorUsername: string;
   collaboratorProfile?: UserProfile;
   bottomOffset?: number;
+  onStartCall?: (username: string) => void;
 }
 
 type VideoCallStatus = 'idle' | 'ringing_out' | 'ringing_in' | 'connected' | 'ended';
@@ -45,6 +47,7 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
   collaboratorUsername,
   collaboratorProfile,
   bottomOffset = 24,
+  onStartCall,
 }) => {
   const [isMinimized, setIsMinimized] = useState(true);
   const [messages, setMessages] = useState<PeerMessage[]>([]);
@@ -354,14 +357,28 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
         </div>
 
         <div style={styles.headerActions}>
+          {/* Voice call launch button (when idle) */}
+          {videoStatus === 'idle' && onStartCall && (
+            <button
+              onClick={() => onStartCall(collaboratorUsername)}
+              style={styles.voiceCallLaunchBtn}
+              title={`Start voice call with @${collaboratorUsername}`}
+              aria-label={`Voice call ${collaboratorUsername}`}
+            >
+              <PhoneIcon size={12} />
+              <span>Call</span>
+            </button>
+          )}
+
           {/* Video call launch button (when idle) */}
           {videoStatus === 'idle' && (
             <button
               onClick={handleStartVideoCall}
               style={styles.videoCallLaunchBtn}
               title={`Start video call with @${collaboratorUsername}`}
+              aria-label={`Video call ${collaboratorUsername}`}
             >
-              <VideoIcon size={14} />
+              <VideoIcon size={13} />
               <span>Video</span>
             </button>
           )}
@@ -749,6 +766,20 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     fontSize: '12px',
+  },
+  voiceCallLaunchBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    border: '1px solid rgba(59, 130, 246, 0.4)',
+    color: '#60a5fa',
+    fontSize: '11px',
+    fontWeight: 600,
+    padding: '4px 8px',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    transition: 'all 0.15s ease',
   },
   videoCallLaunchBtn: {
     display: 'flex',

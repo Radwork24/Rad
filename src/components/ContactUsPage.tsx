@@ -13,7 +13,7 @@ type FeedbackType = 'bug' | 'feature' | 'general';
 export const ContactUsPage: React.FC<ContactUsPageProps> = ({ onBack, currentUser }) => {
   const [feedbackType, setFeedbackType] = useState<FeedbackType>('bug');
   const [message, setMessage] = useState('');
-  const [contactInfo, setContactInfo] = useState(currentUser?.username || '');
+  const [contactInfo, setContactInfo] = useState(currentUser?.username ? `@${currentUser.username}` : '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -21,18 +21,18 @@ export const ContactUsPage: React.FC<ContactUsPageProps> = ({ onBack, currentUse
   const getPlaceholder = () => {
     switch (feedbackType) {
       case 'bug':
-        return 'Describe the bug you encountered... What were you doing, and what happened unexpectedly?';
+        return 'What happened? Describe the unexpected behavior...';
       case 'feature':
-        return 'What feature or tool would you like to see added to Rad? How would it improve your workflow?';
+        return 'What tool or enhancement would speed up your workflow?';
       case 'general':
-        return 'Share your thoughts, suggestions, or any general feedback about Rad...';
+        return 'Thoughts, suggestions, or general feedback on Rad...';
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!message.trim()) {
-      setErrorMessage('Please enter your message before submitting.');
+      setErrorMessage('Please enter your note before sending.');
       return;
     }
 
@@ -49,31 +49,28 @@ export const ContactUsPage: React.FC<ContactUsPageProps> = ({ onBack, currentUse
     };
 
     try {
-      // 1. Save to Firestore
       try {
         await addDoc(collection(db, 'feedback'), {
           ...feedbackPayload,
           createdAt: serverTimestamp(),
         });
-        console.log('✅ [Rad Feedback] Saved successfully to Firestore');
       } catch (firestoreErr) {
-        console.warn('⚠️ [Rad Feedback] Firestore offline or notice, saving locally:', firestoreErr);
+        console.warn('⚠️ [Rad Feedback] Firestore offline, saving locally:', firestoreErr);
       }
 
-      // 2. Cache in localStorage as backup
       try {
         const localKey = 'rad_user_feedback';
         const existing = JSON.parse(localStorage.getItem(localKey) || '[]');
         existing.push(feedbackPayload);
         localStorage.setItem(localKey, JSON.stringify(existing));
-      } catch (storageErr) {
+      } catch {
         // ignore
       }
 
       setIsSubmitted(true);
       setMessage('');
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Something went wrong. Please try again.');
+      setErrorMessage(err?.message || 'Unable to send message. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -86,61 +83,67 @@ export const ContactUsPage: React.FC<ContactUsPageProps> = ({ onBack, currentUse
   };
 
   return (
-    <div style={styles.pageContainer}>
-      {/* Background glow effects */}
-      <div style={styles.radialGlow} />
-      <div style={styles.gridOverlay} />
+    <div style={styles.pageWrapper}>
+      {/* Subtle Minimal Back Button in Top-Left */}
+      <button onClick={onBack} style={styles.minimalBackBtn} title="Back">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+        <span>Back</span>
+      </button>
 
-      {/* Top Navigation */}
-      <header style={styles.header}>
-        <div style={styles.brand} onClick={onBack} title="Return to Rad">
-          <span style={styles.brandText}>Rad</span>
+      {/* Main Stage — Strictly in the center of the page */}
+      <div style={styles.centerStage}>
+        {/* Left Side: Canva Card with Rad Emblem */}
+        <div style={styles.canvaCard}>
+          <div style={styles.canvaInner}>
+            <div style={styles.canvaGlow} />
+            <img
+              src={radLogo}
+              alt="Rad Logo"
+              style={styles.canvaLogo}
+              onError={(e) => {
+                (e.currentTarget as HTMLElement).style.display = 'none';
+              }}
+            />
+            <div style={styles.canvaBadge}>
+              <span style={styles.canvaBadgeDot} />
+              <span style={styles.canvaBadgeText}>Direct Support</span>
+            </div>
+            <span style={styles.canvaSubLabel}>Engineered by Mohit & Abhay</span>
+          </div>
         </div>
 
-        <button onClick={onBack} style={styles.backBtn}>
-          <span style={styles.backArrow}>←</span>
-          <span>Back</span>
-        </button>
-      </header>
-
-      {/* Center Content Container */}
-      <main style={styles.mainContent}>
-        <div style={styles.card}>
-          {/* Logo Badge */}
-          <div style={styles.heroLogoWrapper}>
-            <img src={radLogo} alt="Rad Emblem" style={styles.heroLogo} />
+        {/* Right Side: Clean Typography & Minimalist Form */}
+        <div style={styles.textSection}>
+          <div style={styles.headerRow}>
+            <h2 style={styles.title}>Contact & Feedback</h2>
+            <span style={styles.subtitle}>Direct channel to Rad creators and systems engineers</span>
           </div>
 
-          <h1 style={styles.title}>Contact Us</h1>
-          <p style={styles.subtitle}>
-            Have a bug report or a feature idea for Rad? Let us know directly below.
-          </p>
+          <div style={styles.dividerLine} />
 
           {isSubmitted ? (
-            /* Success confirmation screen */
-            <div style={styles.successBox}>
-              <div style={styles.successIconWrapper}>
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              </div>
-              <h3 style={styles.successTitle}>Thank you!</h3>
-              <p style={styles.successMessage}>
-                Your feedback has been received. Our team reviews every suggestion and bug report to make Rad even better.
+            /* Minimalist Success Confirmation */
+            <div style={styles.successWrapper}>
+              <div style={styles.successIconPill}>✓</div>
+              <h3 style={styles.successTitle}>Note Transmitted</h3>
+              <p style={styles.successSubtitle}>
+                Your message has been delivered directly to the team. We review every note to continuously evolve Rad.
               </p>
               <div style={styles.successActions}>
                 <button onClick={handleReset} style={styles.secondaryBtn}>
-                  Send another note
+                  Send Another
                 </button>
                 <button onClick={onBack} style={styles.primaryBtn}>
-                  Back to Rad
+                  Back to Rad →
                 </button>
               </div>
             </div>
           ) : (
-            /* Feedback Form */
+            /* Minimalist Feedback Form */
             <form onSubmit={handleSubmit} style={styles.form}>
-              {/* Type selector tabs */}
+              {/* Type selector pills */}
               <div style={styles.typeSelector}>
                 <button
                   type="button"
@@ -150,7 +153,7 @@ export const ContactUsPage: React.FC<ContactUsPageProps> = ({ onBack, currentUse
                     ...(feedbackType === 'bug' ? styles.typeBtnActive : {}),
                   }}
                 >
-                  <span>Report a Bug</span>
+                  Bug Report
                 </button>
 
                 <button
@@ -161,7 +164,7 @@ export const ContactUsPage: React.FC<ContactUsPageProps> = ({ onBack, currentUse
                     ...(feedbackType === 'feature' ? styles.typeBtnActive : {}),
                   }}
                 >
-                  <span>Suggest a Feature</span>
+                  Feature Idea
                 </button>
 
                 <button
@@ -172,388 +175,340 @@ export const ContactUsPage: React.FC<ContactUsPageProps> = ({ onBack, currentUse
                     ...(feedbackType === 'general' ? styles.typeBtnActive : {}),
                   }}
                 >
-                  <span>General Feedback</span>
+                  General
                 </button>
               </div>
 
-              {/* Main Center Message Textarea */}
-              <div style={styles.inputGroup}>
-                <label style={styles.inputLabel}>
-                  {feedbackType === 'bug' && 'Bug Details'}
-                  {feedbackType === 'feature' && 'Feature Proposal'}
-                  {feedbackType === 'general' && 'Your Message'}
-                </label>
+              {/* Message Input */}
+              <div style={styles.fieldGroup}>
                 <textarea
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   placeholder={getPlaceholder()}
-                  rows={6}
-                  maxLength={2500}
+                  rows={4}
+                  maxLength={2000}
                   style={styles.textarea}
                   required
                 />
-                <div style={styles.charCounter}>
-                  {message.length} / 2500
-                </div>
               </div>
 
-              {/* Optional Contact / Username */}
-              <div style={styles.inputGroup}>
-                <label style={styles.inputLabel}>
-                  Your Name or Email <span style={styles.optionalTag}>(Optional)</span>
-                </label>
+              {/* Optional Contact Line */}
+              <div style={styles.fieldGroup}>
                 <input
                   type="text"
                   value={contactInfo}
                   onChange={(e) => setContactInfo(e.target.value)}
-                  placeholder="e.g. name@example.com or username"
+                  placeholder="Your username or email (optional)"
                   style={styles.textInput}
                 />
               </div>
 
-              {errorMessage && (
-                <div style={styles.errorMessage}>{errorMessage}</div>
-              )}
+              {errorMessage && <span style={styles.errorText}>{errorMessage}</span>}
 
-              {/* Submit Button */}
-              <button
-                type="submit"
-                disabled={isSubmitting || !message.trim()}
-                style={{
-                  ...styles.submitBtn,
-                  opacity: isSubmitting || !message.trim() ? 0.6 : 1,
-                  cursor: isSubmitting || !message.trim() ? 'not-allowed' : 'pointer',
-                }}
-              >
-                {isSubmitting ? (
-                  <span>Sending feedback...</span>
-                ) : (
-                  <>
-                    <span>Submit Feedback</span>
-                    <span style={{ fontSize: '15px' }}>→</span>
-                  </>
-                )}
-              </button>
+              {/* Minimal Submit Action */}
+              <div style={styles.submitRow}>
+                <span style={styles.charHint}>{message.length}/2000</span>
+                <button
+                  type="submit"
+                  disabled={isSubmitting || !message.trim()}
+                  style={{
+                    ...styles.submitBtn,
+                    opacity: isSubmitting || !message.trim() ? 0.45 : 1,
+                    cursor: isSubmitting || !message.trim() ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {isSubmitting ? 'Transmitting...' : 'Send Note →'}
+                </button>
+              </div>
             </form>
           )}
         </div>
-      </main>
+      </div>
     </div>
   );
 };
 
 const styles: Record<string, React.CSSProperties> = {
-  pageContainer: {
-    minHeight: '100vh',
+  pageWrapper: {
     width: '100vw',
+    height: '100vh',
     backgroundColor: '#000000',
     color: '#ffffff',
-    fontFamily: 'var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif)',
-    position: 'relative',
-    display: 'flex',
-    flexDirection: 'column',
-    overflowX: 'hidden',
-    overflowY: 'auto',
-    boxSizing: 'border-box',
-  },
-  radialGlow: {
-    position: 'absolute',
-    top: '-10%',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    width: '800px',
-    height: '450px',
-    background: 'radial-gradient(ellipse at center, rgba(59, 130, 246, 0.15) 0%, rgba(37, 99, 235, 0.05) 45%, transparent 70%)',
-    filter: 'blur(40px)',
-    pointerEvents: 'none',
-    zIndex: 1,
-  },
-  gridOverlay: {
-    position: 'absolute',
-    inset: 0,
-    backgroundImage: `
-      linear-gradient(to right, rgba(255, 255, 255, 0.015) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(255, 255, 255, 0.015) 1px, transparent 1px)
-    `,
-    backgroundSize: '48px 48px',
-    pointerEvents: 'none',
-    zIndex: 1,
-  },
-  header: {
-    height: '64px',
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '0 32px',
+    justifyContent: 'center',
     position: 'relative',
-    zIndex: 10,
-    borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
-  },
-  brand: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '10px',
-    cursor: 'pointer',
+    overflow: 'hidden',
     userSelect: 'none',
+    fontFamily:
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
   },
-  brandLogo: {
-    height: '30px',
-    width: 'auto',
-    objectFit: 'contain',
-    filter: 'drop-shadow(0 2px 8px rgba(59, 130, 246, 0.5))',
-  },
-  brandText: {
-    fontSize: '20px',
-    fontWeight: 600,
-    color: '#ffffff',
-    letterSpacing: '-0.3px',
-  },
-  backBtn: {
+  minimalBackBtn: {
+    position: 'absolute',
+    top: '28px',
+    left: '32px',
     display: 'inline-flex',
     alignItems: 'center',
-    gap: '8px',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    border: '1px solid rgba(255, 255, 255, 0.12)',
-    borderRadius: '9999px',
-    color: '#e2e8f0',
-    fontSize: '13.5px',
+    gap: '6px',
+    backgroundColor: 'transparent',
+    border: 'none',
+    color: 'rgba(255, 255, 255, 0.45)',
+    fontSize: '13px',
     fontWeight: 500,
-    padding: '7px 18px',
     cursor: 'pointer',
-    transition: 'all 0.15s ease',
-    backdropFilter: 'blur(10px)',
+    padding: '6px 8px',
+    borderRadius: '6px',
+    transition: 'color 0.15s ease',
+    zIndex: 10,
   },
-  backArrow: {
-    fontSize: '15px',
-    transition: 'transform 0.15s ease',
+  centerStage: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '48px',
+    maxWidth: '720px',
+    width: '90%',
+    boxSizing: 'border-box',
   },
-  mainContent: {
+  canvaCard: {
+    width: '230px',
+    height: '290px',
+    backgroundColor: '#080808',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+    borderRadius: '16px',
+    overflow: 'hidden',
+    position: 'relative',
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    boxShadow: '0 16px 40px rgba(0, 0, 0, 0.7)',
+  },
+  canvaInner: {
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '14px',
+    position: 'relative',
+  },
+  canvaGlow: {
+    position: 'absolute',
+    width: '130px',
+    height: '130px',
+    borderRadius: '50%',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    filter: 'blur(36px)',
+    pointerEvents: 'none',
+  },
+  canvaLogo: {
+    width: '64px',
+    height: '64px',
+    objectFit: 'contain',
+    borderRadius: '12px',
+    zIndex: 1,
+    filter: 'drop-shadow(0 0 16px rgba(255, 255, 255, 0.25))',
+  },
+  canvaBadge: {
+    zIndex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+    padding: '4px 10px',
+    borderRadius: '12px',
+  },
+  canvaBadgeDot: {
+    width: '6px',
+    height: '6px',
+    borderRadius: '50%',
+    backgroundColor: '#10b981',
+    boxShadow: '0 0 6px rgba(16, 185, 129, 0.6)',
+  },
+  canvaBadgeText: {
+    fontSize: '11px',
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontWeight: 500,
+    letterSpacing: '0.2px',
+  },
+  canvaSubLabel: {
+    fontSize: '10px',
+    color: 'rgba(255, 255, 255, 0.35)',
+    fontWeight: 500,
+    letterSpacing: '0.2px',
+    zIndex: 1,
+  },
+  textSection: {
     flex: 1,
     display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '40px 20px 60px',
-    position: 'relative',
-    zIndex: 5,
+    flexDirection: 'column',
+    minWidth: 0,
   },
-  card: {
-    width: '100%',
-    maxWidth: '620px',
-    backgroundColor: 'rgba(10, 10, 10, 0.75)',
-    border: '1px solid rgba(255, 255, 255, 0.1)',
-    borderRadius: '24px',
-    padding: '36px 36px 32px',
-    backdropFilter: 'blur(24px)',
-    boxShadow: '0 24px 64px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.04) inset',
+  headerRow: {
     display: 'flex',
     flexDirection: 'column',
-    alignItems: 'center',
-    textAlign: 'center',
-    boxSizing: 'border-box',
-  },
-  heroLogoWrapper: {
-    marginBottom: '16px',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  heroLogo: {
-    height: '68px',
-    width: 'auto',
-    objectFit: 'contain',
-    filter: 'drop-shadow(0 4px 20px rgba(59, 130, 246, 0.5)) drop-shadow(0 0 10px rgba(0, 0, 0, 0.8))',
+    gap: '4px',
   },
   title: {
-    fontSize: '28px',
+    fontSize: '22px',
     fontWeight: 650,
     color: '#ffffff',
-    letterSpacing: '-0.5px',
-    margin: '0 0 8px 0',
+    letterSpacing: '-0.4px',
+    margin: 0,
   },
   subtitle: {
-    fontSize: '14px',
-    color: 'rgba(255, 255, 255, 0.65)',
-    margin: '0 0 28px 0',
-    maxWidth: '460px',
-    lineHeight: 1.5,
+    fontSize: '12.5px',
+    color: 'rgba(255, 255, 255, 0.45)',
+    fontWeight: 400,
+    letterSpacing: '-0.1px',
+  },
+  dividerLine: {
+    height: '1px',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    margin: '18px 0',
+    width: '100%',
   },
   form: {
-    width: '100%',
     display: 'flex',
     flexDirection: 'column',
-    gap: '20px',
-    textAlign: 'left',
+    gap: '12px',
   },
   typeSelector: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(3, 1fr)',
+    display: 'flex',
     gap: '8px',
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    padding: '4px',
-    borderRadius: '12px',
-    border: '1px solid rgba(255, 255, 255, 0.06)',
   },
   typeBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '6px',
-    padding: '9px 8px',
-    borderRadius: '9px',
     backgroundColor: 'transparent',
-    border: '1px solid transparent',
-    color: 'rgba(255, 255, 255, 0.6)',
-    fontSize: '12.5px',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+    color: 'rgba(255, 255, 255, 0.45)',
+    padding: '5px 11px',
+    borderRadius: '16px',
+    fontSize: '11px',
     fontWeight: 500,
     cursor: 'pointer',
     transition: 'all 0.15s ease',
   },
   typeBtnActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    border: '1px solid rgba(255, 255, 255, 0.18)',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
     color: '#ffffff',
-    boxShadow: '0 2px 10px rgba(0, 0, 0, 0.4)',
   },
-  typeEmoji: {
-    fontSize: '13px',
-  },
-  inputGroup: {
+  fieldGroup: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '6px',
-    position: 'relative',
-  },
-  inputLabel: {
-    fontSize: '13px',
-    fontWeight: 500,
-    color: 'rgba(255, 255, 255, 0.85)',
-  },
-  optionalTag: {
-    fontSize: '11.5px',
-    color: 'rgba(255, 255, 255, 0.4)',
-    fontWeight: 400,
   },
   textarea: {
     width: '100%',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    border: '1px solid rgba(255, 255, 255, 0.12)',
-    borderRadius: '14px',
-    padding: '14px 16px',
-    color: '#ffffff',
-    fontSize: '14px',
-    lineHeight: 1.55,
-    outline: 'none',
-    resize: 'vertical',
-    minHeight: '120px',
-    fontFamily: 'inherit',
     boxSizing: 'border-box',
-    transition: 'border-color 0.2s, background-color 0.2s, box-shadow 0.2s',
-  },
-  charCounter: {
-    alignSelf: 'flex-end',
-    fontSize: '11px',
-    color: 'rgba(255, 255, 255, 0.35)',
-    marginTop: '2px',
+    backgroundColor: '#070707',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+    borderRadius: '8px',
+    padding: '10px 12px',
+    color: '#ffffff',
+    fontSize: '12.5px',
+    lineHeight: 1.5,
+    resize: 'none',
+    outline: 'none',
+    fontFamily: 'inherit',
+    transition: 'border-color 0.15s ease',
   },
   textInput: {
     width: '100%',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    border: '1px solid rgba(255, 255, 255, 0.12)',
-    borderRadius: '12px',
-    padding: '11px 14px',
-    color: '#ffffff',
-    fontSize: '13.5px',
-    outline: 'none',
     boxSizing: 'border-box',
-    fontFamily: 'inherit',
-    transition: 'border-color 0.2s, background-color 0.2s',
-  },
-  errorMessage: {
-    fontSize: '12.5px',
-    color: '#ef4444',
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-    border: '1px solid rgba(239, 68, 68, 0.25)',
+    backgroundColor: '#070707',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
     borderRadius: '8px',
     padding: '8px 12px',
-    textAlign: 'center',
+    color: '#ffffff',
+    fontSize: '12px',
+    outline: 'none',
+    fontFamily: 'inherit',
+    transition: 'border-color 0.15s ease',
   },
-  submitBtn: {
+  errorText: {
+    fontSize: '11.5px',
+    color: '#f87171',
+  },
+  submitRow: {
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: '8px',
-    width: '100%',
+    justifyContent: 'space-between',
+    marginTop: '4px',
+  },
+  charHint: {
+    fontSize: '10.5px',
+    color: 'rgba(255, 255, 255, 0.25)',
+  },
+  submitBtn: {
     backgroundColor: '#ffffff',
     color: '#000000',
     border: 'none',
-    borderRadius: '12px',
-    padding: '12px 20px',
-    fontSize: '14px',
+    padding: '7px 16px',
+    borderRadius: '20px',
+    fontSize: '12px',
     fontWeight: 600,
-    marginTop: '6px',
-    boxShadow: '0 4px 18px rgba(255, 255, 255, 0.12)',
+    cursor: 'pointer',
     transition: 'all 0.15s ease',
   },
-  successBox: {
+  successWrapper: {
     display: 'flex',
     flexDirection: 'column',
-    alignItems: 'center',
-    textAlign: 'center',
-    padding: '24px 12px',
-    gap: '14px',
+    alignItems: 'flex-start',
+    gap: '8px',
+    padding: '12px 0',
   },
-  successIconWrapper: {
-    width: '56px',
-    height: '56px',
+  successIconPill: {
+    width: '24px',
+    height: '24px',
     borderRadius: '50%',
-    backgroundColor: 'rgba(59, 130, 246, 0.12)',
-    border: '1px solid rgba(59, 130, 246, 0.35)',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    border: '1px solid rgba(16, 185, 129, 0.4)',
+    color: '#10b981',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: '6px',
-    boxShadow: '0 0 20px rgba(59, 130, 246, 0.25)',
+    fontSize: '12px',
+    fontWeight: 700,
   },
   successTitle: {
-    fontSize: '22px',
+    fontSize: '17px',
     fontWeight: 650,
     color: '#ffffff',
     margin: 0,
+    letterSpacing: '-0.3px',
   },
-  successMessage: {
-    fontSize: '13.5px',
-    color: 'rgba(255, 255, 255, 0.7)',
-    maxWidth: '420px',
+  successSubtitle: {
+    fontSize: '12.5px',
+    color: 'rgba(255, 255, 255, 0.65)',
     lineHeight: 1.5,
     margin: 0,
   },
   successActions: {
     display: 'flex',
-    gap: '12px',
-    marginTop: '16px',
-    width: '100%',
-    justifyContent: 'center',
+    alignItems: 'center',
+    gap: '10px',
+    marginTop: '12px',
+  },
+  secondaryBtn: {
+    backgroundColor: 'transparent',
+    border: '1px solid rgba(255, 255, 255, 0.14)',
+    color: 'rgba(255, 255, 255, 0.65)',
+    padding: '6px 14px',
+    borderRadius: '16px',
+    fontSize: '11.5px',
+    fontWeight: 500,
+    cursor: 'pointer',
   },
   primaryBtn: {
     backgroundColor: '#ffffff',
-    color: '#000000',
     border: 'none',
-    borderRadius: '9999px',
-    padding: '10px 22px',
-    fontSize: '13.5px',
+    color: '#000000',
+    padding: '6px 16px',
+    borderRadius: '16px',
+    fontSize: '11.5px',
     fontWeight: 600,
     cursor: 'pointer',
-    transition: 'all 0.15s ease',
-  },
-  secondaryBtn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    color: '#ffffff',
-    border: '1px solid rgba(255, 255, 255, 0.15)',
-    borderRadius: '9999px',
-    padding: '10px 20px',
-    fontSize: '13.5px',
-    fontWeight: 500,
-    cursor: 'pointer',
-    transition: 'all 0.15s ease',
   },
 };
