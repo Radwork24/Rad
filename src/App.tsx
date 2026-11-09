@@ -114,6 +114,10 @@ export default function App() {
   useEffect(() => {
     if (!currentUser?.username) return;
     const unsubscribe = subscribeToIncomingCalls(currentUser.username, (incomingCall) => {
+      // Never open Voice Call Widget for Video Calls — video calls are handled inside FloatingPeerChat
+      if (incomingCall.isVideo || (incomingCall.callId && incomingCall.callId.startsWith('vcall_'))) {
+        return;
+      }
       setActiveCall(incomingCall);
     });
     return () => unsubscribe();
@@ -667,21 +671,20 @@ export default function App() {
         onCallStateChange={setActiveCall}
       />
 
-      {/* Floating Peer Chat — only shown inside a shared chat (chat with multiple participants).
-           One pill per collaborator, stacked bottom-right with 72px spacing so they don't overlap. */}
-      {activeChatId && activeChatCollaborators.map((collaborator, idx) => (
+      {/* Floating Peer / Group Chat — consolidated into ONE single widget for all collaborators in this chat. */}
+      {activeChatId && activeChatCollaborators.length > 0 && (
         <FloatingPeerChat
-          key={`peer-chat-${activeChatId}-${collaborator}`}
+          key={`peer-chat-${activeChatId}`}
           chatId={activeChatId}
           currentUsername={currentUser.username}
-          collaboratorUsername={collaborator}
-          collaboratorProfile={allUsers.find(
-            (u) => u.username.toLowerCase().trim() === collaborator.toLowerCase().trim()
+          collaborators={activeChatCollaborators}
+          collaboratorProfiles={allUsers.filter((u) =>
+            activeChatCollaborators.some((c) => c.toLowerCase().trim() === u.username.toLowerCase().trim())
           )}
-          bottomOffset={24 + idx * 72}
+          bottomOffset={24}
           onStartCall={handleStartCall}
         />
-      ))}
+      )}
       {/* Floating Lofi Music Player — persists seamlessly across all tabs and study sessions */}
       <GlobalFloatingLofiPlayer onOpenFullView={() => setActiveView('lofi')} />
     </div>

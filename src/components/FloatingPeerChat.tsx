@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   MessageSquareIcon,
   MinimizeIcon,
@@ -33,8 +33,10 @@ import type { UserProfile } from '../services/userService';
 interface FloatingPeerChatProps {
   chatId: string;
   currentUsername: string;
-  collaboratorUsername: string;
+  collaborators?: string[];
+  collaboratorUsername?: string;
   collaboratorProfile?: UserProfile;
+  collaboratorProfiles?: UserProfile[];
   bottomOffset?: number;
   onStartCall?: (username: string) => void;
 }
@@ -44,17 +46,31 @@ type VideoCallStatus = 'idle' | 'ringing_out' | 'ringing_in' | 'connected' | 'en
 export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
   chatId,
   currentUsername,
+  collaborators,
   collaboratorUsername,
   collaboratorProfile,
+  collaboratorProfiles,
   bottomOffset = 24,
   onStartCall,
 }) => {
+  const allCollaborators = useMemo(() => {
+    if (collaborators && collaborators.length > 0) return collaborators;
+    if (collaboratorUsername) return [collaboratorUsername];
+    return [];
+  }, [collaborators, collaboratorUsername]);
+
+  const isGroup = allCollaborators.length > 1;
+  const primaryCollab = allCollaborators[0] || 'Peer';
+  const primaryProfile =
+    collaboratorProfile ||
+    (collaboratorProfiles && collaboratorProfiles.length > 0 ? collaboratorProfiles[0] : undefined);
+
   const [isMinimized, setIsMinimized] = useState(true);
   const [messages, setMessages] = useState<PeerMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [lastReadTimestamp, setLastReadTimestamp] = useState<number>(Date.now());
-  // isDismissed intentionally removed — widget is always visible (no dismiss option)
+  const [showCallMenu, setShowCallMenu] = useState<'voice' | 'video' | null>(null);
 
   // Video call state
   const [videoStatus, setVideoStatus] = useState<VideoCallStatus>('idle');
@@ -86,14 +102,14 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
     return () => unsubscribe();
   }, [chatId]);
 
-  // Subscribe to incoming video calls FROM this collaborator
+  // Subscribe to incoming video calls from ANY collaborator in this chat
   useEffect(() => {
-    if (!currentUsername) return;
+    if (!currentUsername || allCollaborators.length === 0) return;
+    const collabKeys = allCollaborators.map((c: string) => c.toLowerCase().trim());
     const unsubscribe = subscribeToIncomingCalls(currentUsername, (call) => {
-      const callerKey = call.caller.toLowerCase().trim();
-      const collabKey = collaboratorUsername.toLowerCase().trim();
-      // Only accept video calls initiated by this collaborator
-      if (callerKey === collabKey && (call.isVideo || call.callId.startsWith('vcall_'))) {
+      const callerKey = (call.caller || '').toLowerCase().trim();
+      // Only accept video calls initiated by a collaborator in this chat
+      if (collabKeys.includes(callerKey) && (call.isVideo || (call.callId && call.callId.startsWith('vcall_')))) {
         setIncomingVideoCall(call);
         setVideoStatus('ringing_in');
         // Unminimize so the user sees the incoming video call immediately
@@ -101,7 +117,14 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
       }
     });
     return () => unsubscribe();
-  }, [currentUsername, collaboratorUsername]);
+  }, [currentUsername, allCollaborators]);
+
+  // Close call dropdown when call status changes
+  useEffect(() => {
+    if (videoStatus !== 'idle') {
+      setShowCallMenu(null);
+    }
+  }, [videoStatus]);
 
   // Stream subscriber: auto-wire local and remote streams to video tags
   useEffect(() => {
@@ -199,14 +222,17 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
     }
   }, []);
 
-  const handleStartVideoCall = async () => {
+  const handleStartVideoCall = async (targetPeer?: string) => {
     if (videoStatus !== 'idle') return;
+    const target = targetPeer || primaryCollab;
+    if (!target) return;
+    setShowCallMenu(null);
     setVideoStatus('ringing_out');
     setIsMinimized(false);
     try {
       await startVideoCall(
         currentUsername,
-        collaboratorUsername,
+        target,
         handleCallStateChange,
         localVideoRef.current,
         remoteVideoRef.current
@@ -215,6 +241,13 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
       alert(err?.message || 'Could not start video call.');
       setVideoStatus('idle');
     }
+  };
+
+  const handleStartVoiceCall = (targetPeer?: string) => {
+    const target = targetPeer || primaryCollab;
+    if (!target || !onStartCall) return;
+    setShowCallMenu(null);
+    onStartCall(target);
   };
 
   const handleAnswerVideoCall = async () => {
@@ -266,7 +299,7 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
 
   // Widget is always visible — no isDismissed guard
 
-  const initialLetter = (collaboratorUsername || 'C').charAt(0).toUpperCase();
+  const initialLetter = (primaryCollab || 'C').charAt(0).toUpperCase();
 
   // ==========================================================
   // 1. MINIMIZED PILL
@@ -276,18 +309,52 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
       <div
         style={{ ...styles.minimizedPill, bottom: `${bottomOffset}px` }}
         onClick={() => setIsMinimized(false)}
-        title={`Click to open chat with @${collaboratorUsername}`}
+        title={
+          isGroup
+            ? `Click to open Group Chat (${allCollaborators.length + 1} participants)`
+            : `Click to open chat with @${primaryCollab}`
+        }
       >
         <span style={styles.onlineDot} />
-        <div style={styles.avatarCircle}>{initialLetter}</div>
+
+        {isGroup ? (
+          <div style={styles.groupAvatarStack}>
+            {allCollaborators.slice(0, 2).map((collab: string, i: number) => (
+              <div
+                key={collab}
+                style={{
+                  ...styles.avatarCircleMini,
+                  marginLeft: i > 0 ? '-10px' : 0,
+                  zIndex: 2 - i,
+                }}
+              >
+                {collab.charAt(0).toUpperCase()}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={styles.avatarCircle}>{initialLetter}</div>
+        )}
+
         <div style={styles.pillTextContainer}>
-          <span style={styles.pillLabel}>Chat with</span>
-          <span style={styles.pillUsername}>@{collaboratorUsername}</span>
+          {isGroup ? (
+            <>
+              <span style={styles.pillLabel}>Group Chat</span>
+              <span style={styles.pillUsername}>({allCollaborators.length + 1})</span>
+            </>
+          ) : (
+            <>
+              <span style={styles.pillLabel}>Chat with</span>
+              <span style={styles.pillUsername}>@{primaryCollab}</span>
+            </>
+          )}
         </div>
 
         {/* Incoming video call badge */}
         {videoStatus === 'ringing_in' && (
-          <span style={styles.incomingCallBadge}>📹 Incoming Call…</span>
+          <span style={styles.incomingCallBadge}>
+            📹 {incomingVideoCall?.caller ? `@${incomingVideoCall.caller}` : 'Call'}…
+          </span>
         )}
 
         {/* Active connected call badge */}
@@ -310,7 +377,6 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
         >
           <MaximizeIcon size={13} />
         </button>
-        {/* No close/dismiss button — widget is permanently visible */}
       </div>
     );
   }
@@ -333,24 +399,48 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
       {/* ── Header ── */}
       <div style={styles.chatHeader}>
         <div style={styles.headerUserGroup}>
-          <div style={styles.headerAvatar}>
-            {initialLetter}
-            <span style={styles.headerOnlineDot} />
-          </div>
+          {isGroup ? (
+            <div style={styles.groupAvatarStack}>
+              {allCollaborators.slice(0, 3).map((collab: string, i: number) => (
+                <div
+                  key={collab}
+                  style={{
+                    ...styles.avatarCircleMini,
+                    marginLeft: i > 0 ? '-8px' : 0,
+                    zIndex: 3 - i,
+                  }}
+                >
+                  {collab.charAt(0).toUpperCase()}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={styles.headerAvatar}>
+              {initialLetter}
+              <span style={styles.headerOnlineDot} />
+            </div>
+          )}
+
           <div style={styles.headerMeta}>
             <div style={styles.headerNameRow}>
-              <span style={styles.headerUsername}>@{collaboratorUsername}</span>
-              {collaboratorProfile?.branch && (
-                <span style={styles.branchTag}>{collaboratorProfile.branch}</span>
+              <span style={styles.headerUsername}>
+                {isGroup ? `Group Chat (${allCollaborators.length + 1})` : `@${primaryCollab}`}
+              </span>
+              {isGroup ? (
+                <span style={styles.branchTag}>Shared</span>
+              ) : (
+                primaryProfile?.branch && <span style={styles.branchTag}>{primaryProfile.branch}</span>
               )}
             </div>
             <span style={styles.headerSubtitle}>
               {videoStatus === 'connected'
                 ? `📹 In Call • ${formatDuration(callDuration)}`
                 : videoStatus === 'ringing_out'
-                ? '📹 Calling peer…'
+                ? '📹 Calling…'
                 : videoStatus === 'ringing_in'
-                ? '📹 Incoming Video Call'
+                ? `📹 Call from @${incomingVideoCall?.caller || primaryCollab}`
+                : isGroup
+                ? `@${allCollaborators.join(', @')}`
                 : 'Study Companion'}
             </span>
           </div>
@@ -360,10 +450,16 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
           {/* Voice call launch button (when idle) */}
           {videoStatus === 'idle' && onStartCall && (
             <button
-              onClick={() => onStartCall(collaboratorUsername)}
+              onClick={() => {
+                if (isGroup) {
+                  setShowCallMenu(showCallMenu === 'voice' ? null : 'voice');
+                } else {
+                  handleStartVoiceCall(primaryCollab);
+                }
+              }}
               style={styles.voiceCallLaunchBtn}
-              title={`Start voice call with @${collaboratorUsername}`}
-              aria-label={`Voice call ${collaboratorUsername}`}
+              title={isGroup ? 'Voice call group members' : `Start voice call with @${primaryCollab}`}
+              aria-label="Voice call"
             >
               <PhoneIcon size={12} />
               <span>Call</span>
@@ -373,10 +469,16 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
           {/* Video call launch button (when idle) */}
           {videoStatus === 'idle' && (
             <button
-              onClick={handleStartVideoCall}
+              onClick={() => {
+                if (isGroup) {
+                  setShowCallMenu(showCallMenu === 'video' ? null : 'video');
+                } else {
+                  handleStartVideoCall(primaryCollab);
+                }
+              }}
               style={styles.videoCallLaunchBtn}
-              title={`Start video call with @${collaboratorUsername}`}
-              aria-label={`Video call ${collaboratorUsername}`}
+              title={isGroup ? 'Video call group members' : `Start video call with @${primaryCollab}`}
+              aria-label="Video call"
             >
               <VideoIcon size={13} />
               <span>Video</span>
@@ -401,8 +503,39 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
           >
             <MinimizeIcon size={14} />
           </button>
-          {/* No close/dismiss button in header — widget is permanently visible */}
         </div>
+
+        {/* Group Call Member Selector Dropdown */}
+        {showCallMenu && isGroup && (
+          <div style={styles.callMenuDropdown}>
+            <div style={styles.callMenuHeader}>
+              {showCallMenu === 'voice' ? 'Start Voice Call' : 'Start Video Call'}
+            </div>
+            {allCollaborators.map((collab: string) => (
+              <button
+                key={collab}
+                onClick={() => {
+                  if (showCallMenu === 'voice') handleStartVoiceCall(collab);
+                  else handleStartVideoCall(collab);
+                }}
+                style={styles.callMenuItem}
+              >
+                <span>{showCallMenu === 'voice' ? '📞' : '📹'}</span>
+                <span>@{collab}</span>
+              </button>
+            ))}
+            <button
+              onClick={() => {
+                if (showCallMenu === 'voice') handleStartVoiceCall(allCollaborators[0]);
+                else handleStartVideoCall(allCollaborators[0]);
+              }}
+              style={{ ...styles.callMenuItem, borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}
+            >
+              <span>⚡</span>
+              <span>Ring Group</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── Video Call Panel ── */}
@@ -441,9 +574,11 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
           {videoStatus !== 'connected' && (
             <div style={styles.callStatusOverlay}>
               <div style={styles.callStatusAvatarPulse}>
-                <div style={styles.callStatusAvatar}>{initialLetter}</div>
+                <div style={styles.callStatusAvatar}>
+                  {(incomingVideoCall?.caller || primaryCollab).charAt(0).toUpperCase()}
+                </div>
               </div>
-              <div style={styles.callStatusName}>@{collaboratorUsername}</div>
+              <div style={styles.callStatusName}>@{incomingVideoCall?.caller || primaryCollab}</div>
               <div style={styles.callStatusLabel}>
                 {videoStatus === 'ringing_out' ? 'Calling…' : 'Incoming Video Call…'}
               </div>
@@ -519,7 +654,9 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
             <div style={styles.emptyIconWrap}>
               <MessageSquareIcon size={22} />
             </div>
-            <h4 style={styles.emptyTitle}>Chat with @{collaboratorUsername}</h4>
+            <h4 style={styles.emptyTitle}>
+              {isGroup ? 'Group Discussion' : `Chat with @${primaryCollab}`}
+            </h4>
             <p style={styles.emptyDesc}>
               Collaborate and discuss notebook items or video call right here.
             </p>
@@ -535,7 +672,7 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
                   justifyContent: isMe ? 'flex-end' : 'flex-start',
                 }}
               >
-                {!isMe && <div style={styles.msgAvatarMini}>{initialLetter}</div>}
+                {!isMe && <div style={styles.msgAvatarMini}>{msg.sender.charAt(0).toUpperCase()}</div>}
                 <div
                   style={{
                     ...styles.messageBubble,
@@ -574,7 +711,7 @@ export const FloatingPeerChat: React.FC<FloatingPeerChatProps> = ({
           type="text"
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
-          placeholder={`Message @${collaboratorUsername}…`}
+          placeholder={isGroup ? 'Message group…' : `Message @${primaryCollab}…`}
           style={styles.messageInput}
         />
         <button
@@ -633,6 +770,65 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     border: '1px solid rgba(255,255,255,0.2)',
     flexShrink: 0,
+  },
+  groupAvatarStack: {
+    display: 'flex',
+    alignItems: 'center',
+    position: 'relative',
+    flexShrink: 0,
+  },
+  avatarCircleMini: {
+    width: '24px',
+    height: '24px',
+    borderRadius: '50%',
+    backgroundColor: '#1c1b18',
+    color: '#ffffff',
+    fontSize: '11px',
+    fontWeight: 600,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    border: '1.5px solid #000000',
+    flexShrink: 0,
+    boxShadow: '0 2px 6px rgba(0,0,0,0.5)',
+  },
+  callMenuDropdown: {
+    position: 'absolute',
+    top: '46px',
+    right: '12px',
+    backgroundColor: 'rgba(18, 18, 20, 0.98)',
+    border: '1px solid rgba(255, 255, 255, 0.16)',
+    borderRadius: '12px',
+    padding: '6px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+    zIndex: 100,
+    minWidth: '180px',
+    boxShadow: '0 12px 32px rgba(0, 0, 0, 0.85)',
+    backdropFilter: 'blur(16px)',
+  },
+  callMenuHeader: {
+    fontSize: '10.5px',
+    fontWeight: 650,
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+    color: 'rgba(255, 255, 255, 0.4)',
+    padding: '4px 8px',
+  },
+  callMenuItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    backgroundColor: 'transparent',
+    border: 'none',
+    color: '#ffffff',
+    padding: '7px 10px',
+    borderRadius: '8px',
+    fontSize: '12px',
+    cursor: 'pointer',
+    textAlign: 'left',
+    transition: 'background-color 0.15s ease',
   },
   pillTextContainer: {
     display: 'flex',

@@ -52,7 +52,7 @@ export const FloatingCallWidget: React.FC<FloatingCallWidgetProps> = ({
     setIsMinimized(false);
   }, [call?.callId]);
 
-  if (!call) return null;
+  if (!call || call.isVideo || (call.callId && call.callId.startsWith('vcall_'))) return null;
 
   const otherUser = call.isIncoming ? call.caller : call.receiver;
   const initial = otherUser ? otherUser.charAt(0).toUpperCase() : '?';

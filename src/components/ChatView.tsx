@@ -106,6 +106,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const stickToBottomRef = useRef(true);
   const isSubmittingRef = useRef(false);
+  // Track streaming state so we don't auto-scroll to bottom during generation
+  const isStreamingRef = useRef(false);
+  const lastAiMsgIdRef = useRef<string | null>(null);
 
   // Extract numbered turns of user queries for quick bullet bubble jump & rich hover preview
   const queryTurns = useMemo(() => {
@@ -150,11 +153,44 @@ export const ChatView: React.FC<ChatViewProps> = ({
     lastMsg?.role === 'user' ||
     (lastMsg?.role === 'assistant' && !lastMsg.content);
 
-  // Follow new stream tokens only while the user is still at the bottom.
+  // Count assistant messages so we know the latest response turn number
+  const assistantMsgCount = useMemo(
+    () => chat.messages.filter((m) => m.role === 'assistant').length,
+    [chat.messages]
+  );
+
+  // When a NEW assistant message starts streaming, scroll to the top of that response.
+  // After that, hold position — don't drag the user to the bottom with each chunk.
   useEffect(() => {
-    if (!stickToBottomRef.current) return;
-    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-  }, [chat.messages, isAwaitingAi]);
+    const msgs = chat.messages;
+    if (msgs.length === 0) return;
+    const last = msgs[msgs.length - 1];
+
+    if (last.role === 'assistant' && last.content) {
+      // A new assistant message just started (or is continuing)
+      if (last.id !== lastAiMsgIdRef.current) {
+        // Brand-new streaming response — scroll its top into view
+        lastAiMsgIdRef.current = last.id;
+        isStreamingRef.current = true;
+        stickToBottomRef.current = false;
+
+        // Scroll to the start of this response turn
+        const turnEl = document.getElementById(`response-turn-${assistantMsgCount}`);
+        if (turnEl) {
+          turnEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        return; // Don't do anything else for this update
+      }
+      // Same assistant message still streaming — stay put (don't scroll)
+      return;
+    }
+
+    // For non-streaming updates (user messages, loading state), only scroll if
+    // the user was already at the bottom before sending.
+    if (stickToBottomRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    }
+  }, [chat.messages, isAwaitingAi, assistantMsgCount]);
 
   const handleScroll = () => {
     if (!scrollContainerRef.current) return;
@@ -449,6 +485,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
     isSubmittingRef.current = true;
     setIsSending(true);
+    // Reset streaming guard — user is sending a new message so scroll-to-bottom
+    // should follow normally until the AI response starts appearing.
+    isStreamingRef.current = false;
+    lastAiMsgIdRef.current = null;
     stickToBottomRef.current = true;
     setShowScrollBottom(false);
 

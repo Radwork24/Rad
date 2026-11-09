@@ -838,14 +838,17 @@ export function subscribeToIncomingCalls(
         if (seenRingingIds.has(change.doc.id)) return;
         seenRingingIds.add(change.doc.id);
 
-        playIncomingChime();
+        const isVideoCall = Boolean(data.isVideo || (data.callId && data.callId.startsWith('vcall_')));
+        if (!isVideoCall) {
+          playIncomingChime();
+        }
         onIncomingCall({
           callId: data.callId || change.doc.id,
           caller: data.callerDisplay || data.caller,
           receiver: data.receiverDisplay || data.receiver,
           isIncoming: true,
           status: 'ringing',
-          isVideo: Boolean(data.isVideo || (data.callId && data.callId.startsWith('vcall_'))),
+          isVideo: isVideoCall,
         });
       });
     },

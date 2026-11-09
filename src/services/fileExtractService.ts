@@ -15,8 +15,8 @@ import { extractAllTextFromPdf } from './pdfService';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const MAX_CHARS = 80_000; // ~20k tokens — plenty for even large docs
-const MAX_FILE_MB = 25;   // hard limit: reject files > 25 MB
+const MAX_CHARS = 100_000; // ~25k tokens — generous for large documents
+const MAX_FILE_MB = 50;    // hard limit: supports documents up to 50 MB
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
